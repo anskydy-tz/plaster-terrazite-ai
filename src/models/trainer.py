@@ -1,16 +1,18 @@
 """
-Модуль для обучения и валидации моделей.
+Модуль для обучения и валидации моделей терразитовой штукатурки.
 """
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
 from sklearn.model_selection import train_test_split
 import logging
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Any
 import json
 import os
+from pathlib import Path
+import pandas as pd
 
-from .terrazite_model import TerraziteRecipeModel
+from ..data.loader import DataLoader, RecipeLoader
 from ..data.processor import DataProcessor
 
 logger = logging.getLogger(__name__)
@@ -171,9 +173,12 @@ class ModelTrainer:
         
         return vector
     
-    def build_model(self) -> TerraziteRecipeModel:
+    def build_model(self) -> Any:
         """Построение модели."""
         logger.info("Построение модели...")
+        
+        # Импортируем здесь, чтобы избежать циклического импорта
+        from .terrazite_model import TerraziteRecipeModel
         
         self.model = TerraziteRecipeModel(
             input_shape=self.config['input_shape'],
@@ -297,8 +302,6 @@ if __name__ == "__main__":
     
     # Сохраняем тестовые данные в временную директорию
     import tempfile
-    import json
-    import os
     
     with tempfile.TemporaryDirectory() as tmpdir:
         # Создаем структуру директорий
