@@ -3,15 +3,14 @@
 """
 
 from .loader import DataLoader, RecipeLoader
-from .processor import DataProcessor, ImageProcessor
+from .processor import DataProcessor
 from .visualizer import DataVisualizer
-from .augmentor import ImageAugmentor
+from .augmentor import DataAugmentor
 
 __all__ = [
     'DataLoader',
     'RecipeLoader', 
     'DataProcessor',
-    'ImageProcessor',
     'DataVisualizer',
-    'ImageAugmentor'
+    'DataAugmentor'
 ]
