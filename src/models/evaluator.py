@@ -1,5 +1,5 @@
 """
-Модуль для оценки и интерпретации моделей.
+Модуль для оценки и интерпретации моделей терразитовой штукатурки.
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,9 +7,10 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix, classification_report, mean_squared_error, mean_absolute_error
 import tensorflow as tf
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import json
 import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -347,32 +348,48 @@ if __name__ == "__main__":
     component_names = [f'компонент_{i}' for i in range(15)]
     
     # Создаем заглушку модели (в реальности нужно загрузить обученную модель)
-    from .terrazite_model import TerraziteRecipeModel
-    model = TerraziteRecipeModel()
-    model.build_model()
+    try:
+        from .terrazite_model import TerraziteRecipeModel
+        model = TerraziteRecipeModel()
+        model.build_model()
+    except ImportError:
+        print("⚠️  TerraziteRecipeModel не найден, используем заглушку")
+        model = None
     
     # Создаем evaluator
     evaluator = ModelEvaluator(model=model)
     
     # Оценка классификации
     print("Оценка классификации...")
-    cls_results = evaluator.evaluate_classification(
-        X_test[:10],  # берем только 10 для скорости
-        y_cls_test[:10],
-        class_names,
-        save_dir='test_evaluation'
-    )
+    try:
+        cls_results = evaluator.evaluate_classification(
+            X_test[:10],  # берем только 10 для скорости
+            y_cls_test[:10],
+            class_names,
+            save_dir='test_evaluation'
+        )
+    except Exception as e:
+        print(f"Ошибка при оценке классификации: {e}")
+        cls_results = {}
     
     # Оценка регрессии
     print("\nОценка регрессии...")
-    reg_results = evaluator.evaluate_regression(
-        X_test[:10],
-        y_reg_test[:10],
-        component_names,
-        save_dir='test_evaluation'
-    )
+    try:
+        reg_results = evaluator.evaluate_regression(
+            X_test[:10],
+            y_reg_test[:10],
+            component_names,
+            save_dir='test_evaluation'
+        )
+    except Exception as e:
+        print(f"Ошибка при оценке регрессии: {e}")
+        reg_results = {}
     
     # Генерация отчета
-    report = evaluator.generate_report(cls_results, reg_results, 'test_evaluation/report.json')
+    if cls_results and reg_results:
+        report = evaluator.generate_report(cls_results, reg_results, 'test_evaluation/report.json')
+        print(f"Отчет сгенерирован: {report['summary']}")
+    else:
+        print("Не удалось сгенерировать полный отчет")
     
     print("\n✅ ModelEvaluator готов к работе!")
