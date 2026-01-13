@@ -6,21 +6,36 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
+
+# Добавляем путь для импорта модулей проекта
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.data.loader import RecipeLoader
+
 
 class ExcelProcessor:
     def __init__(self, excel_path):
         self.excel_path = excel_path
         self.df = None
         self.processed_data = []
+        self.recipe_loader = None
         
     def load_excel(self):
-        """Загрузка Excel файла"""
+        """Загрузка Excel файла с использованием RecipeLoader"""
         try:
-            self.df = pd.read_excel(self.excel_path, sheet_name=0)
+            # Используем новый RecipeLoader для загрузки
+            self.recipe_loader = RecipeLoader(self.excel_path)
+            self.df = self.recipe_loader.load_excel()
             print(f"✅ Загружен файл: {os.path.basename(self.excel_path)}")
             print(f"📊 Размер данных: {self.df.shape[0]} строк, {self.df.shape[1]} столбцов")
+            
+            # Парсим компоненты
+            components = self.recipe_loader.parse_components()
+            print(f"🔧 Распарсено {len(components)} рецептов с компонентами")
+            
             return True
         except Exception as e:
             print(f"❌ Ошибка загрузки Excel: {e}")
@@ -32,57 +47,31 @@ class ExcelProcessor:
         return df
     
     def extract_recipes(self):
-        """Извлечение рецептов из Excel"""
-        if self.df is None:
-            return []
-        
-        # Очищаем названия столбцов
-        self.df = self.clean_column_names(self.df)
-        
-        # Находим столбец с названиями рецептов
-        recipe_col = None
-        for col in self.df.columns:
-            if 'наименование' in col.lower() or 'рецепт' in col.lower():
-                recipe_col = col
-                break
-        
-        if recipe_col is None:
-            print("❌ Не найден столбец с названиями рецептов")
+        """Извлечение рецептов из Excel с использованием RecipeLoader"""
+        if self.recipe_loader is None or self.recipe_loader.components is None:
+            print("❌ Данные не загружены. Сначала вызовите load_excel()")
             return []
         
         recipes = []
+        components = self.recipe_loader.components
         
-        for idx, row in self.df.iterrows():
-            recipe_name = row[recipe_col]
+        for recipe_id, comp_dict in components.items():
+            # Находим строку в DataFrame
+            recipe_row = self.df[self.df['ID'].astype(str) == str(recipe_id)]
             
-            # Пропускаем пустые строки
-            if pd.isna(recipe_name):
+            if recipe_row.empty:
+                print(f"⚠️  Не найдена строка для ID: {recipe_id}")
                 continue
             
-            recipe = {
-                'id': f"REC_{idx:03d}",
-                'name': str(recipe_name).strip(),
-                'type': 'терразит' if 'терразит' in str(recipe_name).lower() else 'шовный',
-                'components': {},
-                'total_weight': 1000  # Все рецепты на 1000 кг
-            }
+            recipe_row = recipe_row.iloc[0]
             
-            # Извлекаем компоненты
-            for col in self.df.columns:
-                if col == recipe_col:
-                    continue
-                
-                value = row[col]
-                if pd.isna(value):
-                    value = 0
-                
-                # Преобразуем в число
-                try:
-                    value = float(value)
-                except:
-                    value = 0
-                
-                recipe['components'][col] = value
+            recipe = {
+                'id': str(recipe_id),
+                'name': recipe_row.get('Название', ''),
+                'type': recipe_row.get('Тип', 'unknown'),
+                'components': comp_dict,
+                'total_weight': sum(comp_dict.values())
+            }
             
             recipes.append(recipe)
         
@@ -93,37 +82,54 @@ class ExcelProcessor:
         """Анализ рецептов"""
         analysis = {
             'total_recipes': len(recipes),
-            'terrazite_count': sum(1 for r in recipes if r['type'] == 'терразит'),
-            'seam_count': sum(1 for r in recipes if r['type'] == 'шовный'),
+            'types_count': {},
             'component_stats': {}
         }
         
+        # Подсчет типов рецептов
+        types = [r['type'] for r in recipes]
+        type_counts = pd.Series(types).value_counts()
+        analysis['types_count'] = type_counts.to_dict()
+        
         # Анализ компонентов
         all_components = set()
+        component_totals = {}
+        
         for recipe in recipes:
             all_components.update(recipe['components'].keys())
+            for component, value in recipe['components'].items():
+                component_totals[component] = component_totals.get(component, 0) + value
+        
+        analysis['unique_components'] = len(all_components)
+        analysis['component_totals'] = dict(sorted(
+            component_totals.items(), 
+            key=lambda x: x[1], 
+            reverse=True
+        )[:10])  # Только топ-10
         
         print(f"📊 Всего уникальных компонентов: {len(all_components)}")
+        print(f"📊 Типы рецептов: {analysis['types_count']}")
         
         return analysis
     
     def save_to_json(self, recipes, output_path):
-        """Сохранение в JSON"""
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(recipes, f, ensure_ascii=False, indent=2)
-        
-        print(f"💾 Данные сохранены: {output_path}")
-        
-        # Создаем summary
-        summary = {
-            'total_recipes': len(recipes),
-            'components_count': len(recipes[0]['components']) if recipes else 0,
-            'file_size': os.path.getsize(output_path)
-        }
-        
-        return summary
+        """Сохранение в JSON с использованием RecipeLoader"""
+        try:
+            # Используем метод RecipeLoader для сохранения
+            self.recipe_loader.save_to_json(output_path)
+            print(f"💾 Данные сохранены: {output_path}")
+            
+            # Создаем summary
+            summary = {
+                'total_recipes': len(recipes),
+                'components_count': len(recipes[0]['components']) if recipes else 0,
+                'file_size': os.path.getsize(output_path)
+            }
+            
+            return summary
+        except Exception as e:
+            print(f"❌ Ошибка сохранения JSON: {e}")
+            return None
     
     def create_visualization(self, recipes, output_dir):
         """Создание визуализаций"""
@@ -171,7 +177,7 @@ class ExcelProcessor:
         print("🔄 НАЧАЛО ОБРАБОТКИ EXCEL ФАЙЛА")
         print("=" * 50)
         
-        # 1. Загрузка
+        # 1. Загрузка с использованием RecipeLoader
         if not self.load_excel():
             return None
         
@@ -183,9 +189,12 @@ class ExcelProcessor:
         # 3. Анализ
         analysis = self.analyze_recipes(recipes)
         
-        # 4. Сохранение
+        # 4. Сохранение с использованием RecipeLoader
         json_path = os.path.join(output_dir, 'recipes.json')
         summary = self.save_to_json(recipes, json_path)
+        
+        if not summary:
+            return None
         
         # 5. Визуализация
         viz_path = self.create_visualization(recipes, output_dir)
@@ -205,6 +214,7 @@ class ExcelProcessor:
             'analysis': analysis
         }
 
+
 def main():
     """Точка входа"""
     import sys
@@ -219,10 +229,13 @@ def main():
         
         if not excel_files:
             print("❌ Не найден Excel файл в data/raw/")
-            print("📂 Поместите файл 'Рецептуры терразит.xlsx' в папку data/raw/")
+            print("📂 Поместите файл с рецептами в папку data/raw/")
+            print("📂 Или укажите путь к файлу как аргумент командной строки")
             return
         
         excel_path = excel_files[0]
+    
+    print(f"📄 Используется файл: {excel_path}")
     
     # Создаем процессор и обрабатываем
     processor = ExcelProcessor(excel_path)
@@ -232,6 +245,16 @@ def main():
         print("\n🎉 Файл успешно обработан!")
         print(f"📄 JSON файл: {result['json_path']}")
         print(f"📊 Графики: {result['viz_path']}")
+        
+        # Сохраняем также через RecipeLoader для ML пайплайна
+        try:
+            # Создаем новый RecipeLoader для полного пайплайна
+            recipe_loader = RecipeLoader(excel_path)
+            recipe_loader.process_pipeline(output_path=result['json_path'])
+            print("🔧 Рецепты также сохранены через RecipeLoader для ML пайплайна")
+        except Exception as e:
+            print(f"⚠️  Дополнительное сохранение не удалось: {e}")
+
 
 if __name__ == "__main__":
     main()
