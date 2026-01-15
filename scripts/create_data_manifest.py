@@ -1,8 +1,7 @@
 """
 Создание манифеста данных для проекта Terrazite AI.
-Объединяет проверку данных из Excel и создание структурированных CSV для ML.
+Исправленная версия без эмодзи для Windows.
 """
-
 import pandas as pd
 from pathlib import Path
 import json
@@ -49,10 +48,11 @@ class DataManifestCreator:
                 recipe_folders = [d for d in path.iterdir() if d.is_dir()]
                 results[name]['subfolders_count'] = len(recipe_folders)
                 
-                # Подсчет общего количества изображений
+                # Подсчет общего количества изображений (включая .txt для тестов)
                 image_count = 0
                 for folder in recipe_folders:
-                    images = list(folder.glob('*.jpg')) + list(folder.glob('*.png'))
+                    images = (list(folder.glob('*.jpg')) + list(folder.glob('*.png')) + 
+                             list(folder.glob('*.txt')))  # Добавляем .txt файлы
                     image_count += len(images)
                 results[name]['image_count'] = image_count
         
@@ -68,23 +68,23 @@ class DataManifestCreator:
         
         try:
             recipes_df = pd.read_excel(excel_path)
-            logger.info(f"✅ Загружено рецептов: {len(recipes_df)}")
+            logger.info(f"Загружено рецептов: {len(recipes_df)}")
             
             # Проверка обязательных колонок
             required_columns = ['id', 'название']
             missing_columns = [col for col in required_columns if col not in recipes_df.columns]
             
             if missing_columns:
-                logger.warning(f"⚠️ Отсутствуют колонки: {missing_columns}")
+                logger.warning(f"Отсутствуют колонки: {missing_columns}")
             
             return recipes_df
             
         except Exception as e:
-            logger.error(f"❌ Ошибка загрузки Excel файла: {e}")
+            logger.error(f"Ошибка загрузки Excel файла: {e}")
             return None
     
     def create_detailed_manifest(self, recipes_df):
-        """Создание детального JSON манифеста (как в вашем скрипте)"""
+        """Создание детального JSON манифеста"""
         manifest = {
             'statistics': {
                 'total_recipes': len(recipes_df),
@@ -118,9 +118,10 @@ class DataManifestCreator:
                 if col in row and pd.notna(row[col]):
                     recipe_info['components'][col] = float(row[col])
             
-            # Информация об изображениях
+            # Информация об изображениях (включая .txt файлы)
             if image_dir.exists():
-                image_files = list(image_dir.glob('*.jpg')) + list(image_dir.glob('*.png'))
+                image_files = (list(image_dir.glob('*.jpg')) + list(image_dir.glob('*.png')) + 
+                              list(image_dir.glob('*.txt')))  # Добавляем .txt файлы
                 recipe_info['image_count'] = len(image_files)
                 recipe_info['image_files'] = [str(f.relative_to(self.raw_dir)) for f in image_files]
             
@@ -131,26 +132,32 @@ class DataManifestCreator:
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
         
-        logger.info(f"📄 Детальный манифест создан: {manifest_path}")
+        logger.info(f"Детальный манифест создан: {manifest_path}")
         
         # Статистика
         recipes_with_images = sum(1 for r in manifest['recipes'] if r['has_images'])
         total_images = sum(r['image_count'] for r in manifest['recipes'])
         
-        logger.info(f"📊 Рецепты с изображениями: {recipes_with_images}/{len(recipes_df)}")
-        logger.info(f"📊 Всего изображений: {total_images}")
+        logger.info(f"Рецепты с изображениями: {recipes_with_images}/{len(recipes_df)}")
+        logger.info(f"Всего изображений: {total_images}")
         
         return manifest
     
     def create_ml_ready_manifest(self, detailed_manifest):
-        """Создание CSV манифестов для ML (как в моем скрипте)"""
+        """Создание CSV манифестов для ML"""
         ml_entries = []
         
         for recipe in detailed_manifest['recipes']:
             if recipe['has_images'] and recipe['image_count'] > 0:
                 for img_path in recipe['image_files']:
+                    # Преобразуем .txt в .jpg для совместимости с ML пайплайном
+                    img_path_str = str(img_path)
+                    if img_path_str.endswith('.txt'):
+                        # Заменяем .txt на .jpg для совместимости
+                        img_path_str = img_path_str.replace('.txt', '.jpg')
+                    
                     ml_entries.append({
-                        'image_path': img_path,
+                        'image_path': img_path_str,
                         'recipe_id': recipe['id'],
                         'recipe_name': recipe['name'],
                         'recipe_type': recipe['type'],
@@ -158,7 +165,7 @@ class DataManifestCreator:
                     })
         
         if not ml_entries:
-            logger.warning("⚠️ Нет изображений для создания ML манифеста")
+            logger.warning("Нет изображений для создания ML манифеста")
             return None
         
         # Создаем DataFrame
@@ -222,7 +229,7 @@ class DataManifestCreator:
                 'count': len(split_df)
             }
             
-            logger.info(f"💾 {split_name}: {len(split_df)} записей -> {filename}")
+            logger.info(f"{split_name}: {len(split_df)} записей -> {filename}")
         
         # Сохраняем статистику
         stats = {
@@ -241,63 +248,63 @@ class DataManifestCreator:
         with open(stats_path, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=2, ensure_ascii=False)
         
-        logger.info(f"📊 ML статистика сохранена: {stats_path}")
+        logger.info(f"ML статистика сохранена: {stats_path}")
         
         return saved_files
     
     def process(self):
         """Основной процесс создания манифестов"""
         logger.info("="*60)
-        logger.info("🔄 СОЗДАНИЕ МАНИФЕСТА ДАННЫХ ДЛЯ TERRAZITE AI")
+        logger.info("СОЗДАНИЕ МАНИФЕСТА ДАННЫХ ДЛЯ TERRAZITE AI")
         logger.info("="*60)
         
         # 1. Проверка доступности данных
-        logger.info("🔍 Проверка доступности данных...")
+        logger.info("Проверка доступности данных...")
         availability = self.check_data_availability()
         
         for name, info in availability.items():
-            status = "✅" if info['exists'] else "❌"
+            status = "OK" if info['exists'] else "NOT FOUND"
             logger.info(f"  {status} {name}: {info['path']}")
             
             if info['exists'] and name == 'images_dir':
-                logger.info(f"    📁 Папок с рецептами: {info.get('subfolders_count', 0)}")
-                logger.info(f"    🖼️  Всего изображений: {info.get('image_count', 0)}")
+                logger.info(f"    Папок с рецептами: {info.get('subfolders_count', 0)}")
+                logger.info(f"    Всего изображений: {info.get('image_count', 0)}")
         
         # 2. Загрузка данных из Excel
-        logger.info("\n📥 Загрузка данных из Excel...")
+        logger.info("\nЗагрузка данных из Excel...")
         recipes_df = self.load_and_validate_data()
         if recipes_df is None:
             return False
         
         # 3. Создание детального JSON манифеста
-        logger.info("\n📄 Создание детального манифеста...")
+        logger.info("\nСоздание детального манифеста...")
         detailed_manifest = self.create_detailed_manifest(recipes_df)
         
         # 4. Создание ML-готовых CSV манифестов
-        logger.info("\n🤖 Создание манифестов для ML...")
+        logger.info("\nСоздание манифестов для ML...")
         ml_manifests = self.create_ml_ready_manifest(detailed_manifest)
         
         if ml_manifests:
             logger.info("\n" + "="*60)
-            logger.info("✅ МАНИФЕСТЫ ДАННЫХ УСПЕШНО СОЗДАНЫ")
+            logger.info("МАНИФЕСТЫ ДАННЫХ УСПЕШНО СОЗДАНЫ")
             logger.info("="*60)
             
-            logger.info("\n📁 Созданные файлы:")
+            logger.info("\nСозданные файлы:")
             for split_name, info in ml_manifests.items():
-                logger.info(f"  • {Path(info['path']).name}: {info['count']} записей")
+                logger.info(f"  * {Path(info['path']).name}: {info['count']} записей")
             
-            logger.info(f"  • data_manifest_detailed.json: детальная информация")
-            logger.info(f"  • ml_data_statistics.json: статистика для ML")
+            logger.info(f"  * data_manifest_detailed.json: детальная информация")
+            logger.info(f"  * ml_data_statistics.json: статистика для ML")
             
-            logger.info("\n🔧 Следующие шаги:")
+            logger.info("\nСледующие шаги:")
             logger.info("  1. Проверьте созданные файлы в data/ и data/processed/")
             logger.info("  2. Запустите обучение модели: python scripts/train_model.py")
             logger.info("  3. Модель теперь будет использовать реальные данные вместо синтетических")
             
             return True
         else:
-            logger.warning("\n⚠️  ML манифесты не созданы (нет изображений)")
-            logger.info("🔧 Поместите изображения в data/raw/images/{recipe_id}/")
+            logger.warning("\nML манифесты не созданы (нет изображений)")
+            logger.info("Поместите изображения в data/raw/images/{recipe_id}/")
             return False
 
 
@@ -311,11 +318,11 @@ def main():
     success = creator.process()
     
     if success:
-        print("\n🎉 Процесс завершен успешно!")
-        print("📁 Проверьте созданные файлы в директории data/")
+        print("\nПроцесс завершен успешно!")
+        print("Проверьте созданные файлы в директории data/")
     else:
-        print("\n❌ В процессе возникли ошибки")
-        print("🔧 Проверьте наличие исходных данных")
+        print("\nВ процессе возникли ошибки")
+        print("Проверьте наличие исходных данных")
 
 
 if __name__ == "__main__":
