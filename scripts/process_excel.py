@@ -57,10 +57,10 @@ class ExcelProcessor:
         
         for recipe_id, comp_dict in components.items():
             # Находим строку в DataFrame
-            recipe_row = self.df[self.df['ID'].astype(str) == str(recipe_id)]
+            recipe_row = self.df[self.df['id'].astype(str) == str(recipe_id)]
             
             if recipe_row.empty:
-                print(f"⚠️  Не найдена строка для ID: {recipe_id}")
+                print(f"⚠️  Не найдена строка для id: {recipe_id}")
                 continue
             
             recipe_row = recipe_row.iloc[0]
