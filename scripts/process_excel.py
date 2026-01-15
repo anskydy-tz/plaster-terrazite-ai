@@ -67,8 +67,8 @@ class ExcelProcessor:
             
             recipe = {
                 'id': str(recipe_id),
-                'name': recipe_row.get('Название', ''),
-                'type': recipe_row.get('Тип', 'unknown'),
+                'name': recipe_row.get('название', ''),
+                'type': recipe_row.get('тип', 'unknown'),
                 'components': comp_dict,
                 'total_weight': sum(comp_dict.values())
             }
