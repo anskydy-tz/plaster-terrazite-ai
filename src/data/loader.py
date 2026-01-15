@@ -238,11 +238,11 @@ class RecipeLoader:
         components = {}
         
         # Предполагаем, что колонки с компонентами начинаются после определенных колонок
-        meta_cols = ['ID', 'Название', 'Тип', 'Описание']
+        meta_cols = ['id', 'Название', 'Тип', 'Описание']
         component_cols = [col for col in self.recipes_df.columns if col not in meta_cols]
         
         for _, row in self.recipes_df.iterrows():
-            recipe_id = row.get('ID', 'unknown')
+            recipe_id = row.get('id', 'unknown')
             recipe_components = {}
             
             for component in component_cols:
@@ -276,7 +276,7 @@ class RecipeLoader:
         recipes_list = []
         for recipe_id, comp_dict in self.components.items():
             # Находим соответствующую строку в DataFrame
-            recipe_row = self.recipes_df[self.recipes_df['ID'].astype(str) == str(recipe_id)].iloc[0]
+            recipe_row = self.recipes_df[self.recipes_df['id'].astype(str) == str(recipe_id)].iloc[0]
             
             recipe_data = {
                 'id': str(recipe_id),
