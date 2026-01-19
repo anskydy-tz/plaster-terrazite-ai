@@ -1,794 +1,607 @@
 """
-Модуль для загрузки и подготовки данных для ML моделей
+Модуль для загрузки и обработки данных
 """
+import json
 import pandas as pd
 import numpy as np
-import json
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Any, Optional, Tuple, Union
 import logging
-import sys
-import os
+from dataclasses import dataclass, field
+import torch
+from torch.utils.data import Dataset
+from PIL import Image
+import cv2
 
-# Добавляем путь для импорта модулей проекта
-current_dir = Path(__file__).parent
-project_root = current_dir.parent.parent
-sys.path.insert(0, str(project_root))
+from ..utils.logger import setup_logger
+from .component_analyzer import ComponentAnalyzer  # Импортируем анализатор
 
-try:
-    from src.utils.logger import setup_logger
-    logger = setup_logger(__name__)
-except ImportError as e:
-    # Создаем простой логгер как fallback
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Не удалось импортировать setup_logger: {e}. Используется basicConfig")
+logger = setup_logger(__name__)
+
+
+@dataclass
+class RecipeData:
+    """Контейнер для данных рецепта"""
+    name: str
+    category: str
+    components: Dict[str, float]
+    image_paths: List[str] = field(default_factory=list)
+    features: np.ndarray = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class DataLoader:
-    """Класс для загрузки данных рецептов терразитовой штукатурки"""
-    
-    def __init__(self, data_path: str = "data/processed/recipes.json"):
-        self.data_path = Path(data_path)
-        self.recipes = None
-        self.df = None
-        
-    def load_recipes(self) -> List[Dict]:
-        """Загрузка рецептов из JSON файла"""
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {self.data_path}")
-        
-        with open(self.data_path, 'r', encoding='utf-8') as f:
-            self.recipes = json.load(f)
-        
-        logger.info(f"Загружено {len(self.recipes)} рецептов")
-        return self.recipes
+    """Основной загрузчик данных"""
     
     @staticmethod
     def load_image(image_path: str, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
         """Загрузка и предобработка изображения"""
-        from PIL import Image
-        
         try:
-            img = Image.open(image_path)
-            # Конвертируем в RGB, если нужно
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            # Изменяем размер
-            img = img.resize(target_size)
-            # Конвертируем в numpy массив и нормализуем в [0, 1]
-            img_array = np.array(img, dtype=np.float32) / 255.0
-            return img_array
+            image = Image.open(image_path).convert('RGB')
+            image = image.resize(target_size)
+            return np.array(image)
         except Exception as e:
             logger.error(f"Ошибка загрузки изображения {image_path}: {e}")
-            raise
-
+            return np.zeros((*target_size, 3), dtype=np.uint8)
+    
     @staticmethod
-    def load_recipe_json(json_path: str) -> List[Dict]:
-        """Загрузка рецептов из JSON файла"""
+    def load_recipe_json(json_path: str) -> Dict[str, Any]:
+        """Загрузка JSON файла с рецептами"""
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                recipes = json.load(f)
-            logger.info(f"Загружено {len(recipes)} рецептов из {json_path}")
-            return recipes
+            with open(json_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
         except Exception as e:
             logger.error(f"Ошибка загрузки JSON {json_path}: {e}")
-            raise
-    
-    def prepare_dataframe(self) -> pd.DataFrame:
-        """Преобразование рецептов в DataFrame для ML"""
-        if self.recipes is None:
-            self.load_recipes()
-        
-        data = []
-        
-        for recipe in self.recipes:
-            # Базовые признаки
-            row = {
-                'id': recipe['id'],
-                'name': recipe['name'],
-                'type': recipe['type'],
-                'total_weight': recipe.get('total_weight', 1000)
-            }
-            
-            # Добавляем компоненты как отдельные колонки
-            for component, weight in recipe['components'].items():
-                # Нормализуем название колонки (убираем спецсимволы, сокращаем)
-                col_name = self._normalize_component_name(component)
-                row[col_name] = weight / 1000  # Переводим в тонны (нормализация)
-            
-            data.append(row)
-        
-        self.df = pd.DataFrame(data).fillna(0)
-        
-        # Логируем информацию о данных
-        logger.info(f"Создан DataFrame: {self.df.shape[0]} строк, {self.df.shape[1]} столбцов")
-        logger.info(f"Типы рецептов: {self.df['type'].value_counts().to_dict()}")
-        
-        return self.df
-    
-    def _normalize_component_name(self, component: str) -> str:
-        """Нормализация названий компонентов для использования в качестве имен колонок"""
-        # Убираем лишние пробелы, приводим к нижнему регистру
-        normalized = component.strip().lower()
-        
-        # Заменяем неалфавитно-цифровые символы на подчеркивания
-        import re
-        normalized = re.sub(r'[^\w\s]', '_', normalized)
-        normalized = re.sub(r'\s+', '_', normalized)
-        
-        # Сокращаем слишком длинные названия
-        if len(normalized) > 50:
-            normalized = normalized[:50]
-        
-        return normalized
-    
-    def get_features_and_targets(self, target_components: List[str] = None) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Подготовка признаков и целевых переменных для ML
-        
-        Args:
-            target_components: Список компонентов для предсказания.
-                              Если None, использует все компоненты.
-        
-        Returns:
-            X: Признаки (тип рецепта, общие характеристики)
-            y: Целевые переменные (проценты компонентов)
-        """
-        if self.df is None:
-            self.prepare_dataframe()
-        
-        # Признаки: тип рецепта (кодируем) и другие мета-признаки
-        X = pd.get_dummies(self.df['type'], prefix='type')
-        
-        # Если нужны дополнительные признаки, можно добавить здесь
-        
-        # Целевые переменные: проценты компонентов
-        if target_components is None:
-            # Используем все колонки компонентов (исключая мета-колонки)
-            meta_cols = ['id', 'name', 'type', 'total_weight']
-            component_cols = [col for col in self.df.columns if col not in meta_cols]
-            y = self.df[component_cols].values
-        else:
-            # Используем только указанные компоненты
-            y = self.df[target_components].values
-        
-        logger.info(f"Размерность признаков (X): {X.shape}")
-        logger.info(f"Размерность целевых переменных (y): {y.shape}")
-        
-        return X.values, y
-    
-    def split_data(self, test_size: float = 0.2, random_state: int = 42):
-        """Разделение данных на обучающую и тестовую выборки"""
-        from sklearn.model_selection import train_test_split
-        
-        X, y = self.get_features_and_targets()
-        
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, shuffle=True
-        )
-        
-        logger.info(f"Обучающая выборка: {X_train.shape[0]} образцов")
-        logger.info(f"Тестовая выборка: {X_test.shape[0]} образцов")
-        
-        return X_train, X_test, y_train, y_test
-    
-    def get_component_statistics(self) -> pd.DataFrame:
-        """Статистика по компонентам"""
-        if self.df is None:
-            self.prepare_dataframe()
-        
-        # Мета-колонки
-        meta_cols = ['id', 'name', 'type', 'total_weight']
-        component_cols = [col for col in self.df.columns if col not in meta_cols]
-        
-        stats = []
-        for col in component_cols:
-            non_zero = self.df[col][self.df[col] > 0]
-            if len(non_zero) > 0:
-                stats.append({
-                    'component': col,
-                    'count': len(non_zero),
-                    'mean': non_zero.mean(),
-                    'std': non_zero.std(),
-                    'min': non_zero.min(),
-                    'max': non_zero.max(),
-                    'total_used': self.df[col].sum()
-                })
-        
-        return pd.DataFrame(stats).sort_values('count', ascending=False)
+            return {}
 
 
 class RecipeLoader:
-    """Загрузчик рецептов из Excel файла"""
+    """Загрузчик рецептов из Excel с поддержкой анализа компонентов"""
     
-    def __init__(self, excel_path: str = "data/raw/recipes.xlsx"):
-        self.excel_path = Path(excel_path)
-        self.recipes_df = None
-        self.components = None
+    def __init__(self, excel_path: str = None, component_analyzer: ComponentAnalyzer = None):
+        """
+        Инициализация загрузчика рецептов
         
-    @staticmethod
-    def _parse_float(value: Any) -> float:
-        """Парсинг значений в float"""
-        # Если это число
+        Args:
+            excel_path: Путь к Excel файлу с рецептами
+            component_analyzer: Анализатор компонентов (если None, создается новый)
+        """
+        self.excel_path = excel_path
+        self.df = None
+        self.recipes = []
+        self.categories = []
+        self.component_features = None
+        
+        # Инициализация анализатора компонентов
+        if component_analyzer is None:
+            self.analyzer = ComponentAnalyzer(excel_path)
+        else:
+            self.analyzer = component_analyzer
+        
+        # Загружаем компоненты и их группы
+        self._load_component_config()
+        
+    def _load_component_config(self):
+        """Загрузка конфигурации компонентов из анализатора"""
+        try:
+            # Получаем маппинг категорий
+            category_mapping = self.analyzer.get_category_mapping()
+            self.categories = category_mapping['category_labels']
+            self.component_groups = category_mapping['component_groups']
+            
+            # Получаем признаки компонентов для ML
+            self.component_features = self.analyzer.get_component_features()
+            
+            logger.info(f"Загружено категорий: {len(self.categories)}")
+            logger.info(f"Загружено групп компонентов: {len(self.component_groups)}")
+            logger.info(f"Общее количество уникальных компонентов: {self.component_features['total_components']}")
+            
+        except Exception as e:
+            logger.warning(f"Не удалось загрузить конфигурацию компонентов: {e}")
+            # Значения по умолчанию
+            self.categories = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
+            self.component_groups = {}
+            self.component_features = {
+                'component_to_idx': {},
+                'idx_to_component': {},
+                'component_groups': {},
+                'total_components': 0
+            }
+    
+    def _parse_float(self, value: Any) -> float:
+        """Парсинг числовых значений"""
         if isinstance(value, (int, float)):
             return float(value)
-        
-        # Если это строка
-        if isinstance(value, str):
+        elif isinstance(value, str):
             try:
-                return float(value)
-            except ValueError:
+                # Убираем пробелы и заменяем запятые на точки
+                cleaned = value.replace(',', '.').strip()
+                return float(cleaned) if cleaned else 0.0
+            except:
                 return 0.0
-        
-        # Если это NaN
-        if pd.isna(value):
+        else:
             return 0.0
+    
+    def load_excel(self, excel_path: str = None) -> pd.DataFrame:
+        """
+        Загрузка данных из Excel файла с анализом категорий
         
-        # Если это None
-        if value is None:
-            return 0.0
-        
-        return 0.0
-        
-    def load_excel(self) -> pd.DataFrame:
-        """Загрузка рецептов из Excel файла"""
-        if not self.excel_path.exists():
-            raise FileNotFoundError(f"Excel файл не найден: {self.excel_path}")
+        Args:
+            excel_path: Путь к Excel файлу
             
+        Returns:
+            DataFrame с данными
+        """
+        if excel_path:
+            self.excel_path = excel_path
+        
+        if not self.excel_path:
+            raise ValueError("Не указан путь к Excel файлу")
+        
+        logger.info(f"Загрузка Excel файла: {self.excel_path}")
+        
         try:
-            self.recipes_df = pd.read_excel(self.excel_path)
-            logger.info(f"Загружено {len(self.recipes_df)} рецептов из Excel")
-            return self.recipes_df
+            # Загрузка Excel
+            self.df = pd.read_excel(self.excel_path, header=0)
+            
+            # Удаление строки с итоговой суммой
+            self.df = self.df[self.df.iloc[:, 0] != 'Общая сумма компонетов в рецепте, кг']
+            
+            # Первый столбец - название рецепта
+            recipe_names = self.df.iloc[:, 0].astype(str)
+            
+            # Определяем категорию рецепта на основе анализатора
+            categories = []
+            for name in recipe_names:
+                category = 'Неизвестно'
+                for cat, prefixes in self.analyzer.RECIPE_CATEGORIES.items():
+                    for prefix in prefixes:
+                        if name.startswith(prefix):
+                            category = cat
+                            break
+                    if category != 'Неизвестно':
+                        break
+                categories.append(category)
+            
+            self.df['category'] = categories
+            self.df['recipe_name'] = recipe_names
+            
+            logger.info(f"Загружено рецептов: {len(self.df)}")
+            logger.info(f"Распределение по категориям: {dict(pd.Series(categories).value_counts())}")
+            
+            # Анализ компонентов
+            self.analyzer.df = self.df
+            self.analyzer.analyze_components()
+            
+            # Обновляем признаки компонентов после анализа
+            self.component_features = self.analyzer.get_component_features()
+            
+            return self.df
+            
         except Exception as e:
             logger.error(f"Ошибка загрузки Excel: {e}")
             raise
+    
+    def parse_components(self, row: pd.Series) -> Dict[str, float]:
+        """
+        Парсинг компонентов из строки DataFrame
+        
+        Args:
+            row: Строка DataFrame
             
-    def parse_components(self) -> Dict[str, Dict[str, float]]:
-        """Парсинг компонентов из DataFrame"""
-        if self.recipes_df is None:
-            self.load_excel()
-            
-        # Примерная логика парсинга (нужно адаптировать под вашу структуру Excel)
+        Returns:
+            Словарь компонентов
+        """
         components = {}
         
-        # Предполагаем, что колонки с компонентами начинаются после определенных колонок
-        meta_cols = ['id', 'Название', 'Тип', 'Описание']
-        component_cols = [col for col in self.recipes_df.columns if col not in meta_cols]
+        # Пропускаем первые 2 колонки (название и категория) и последнюю (итог)
+        component_columns = self.df.columns[1:-1] if 'category' in self.df.columns else self.df.columns[1:]
         
-        for _, row in self.recipes_df.iterrows():
-            recipe_id = row.get('id', 'unknown')
-            recipe_components = {}
-            
-            for component in component_cols:
-                value = row.get(component)
-                if pd.notna(value) and value != 0:
-                    recipe_components[component] = self._parse_float(value)
-                    
-            components[str(recipe_id)] = recipe_components
-            
-        self.components = components
-        logger.info(f"Распарсено {len(components)} рецептов с компонентами")
+        for col in component_columns:
+            if col not in ['recipe_name', 'category']:
+                value = self._parse_float(row[col])
+                if value > 0:
+                    components[col] = value
+        
         return components
-        
-    def get_component_names(self) -> List[str]:
-        """Получение списка уникальных названий компонентов"""
-        if self.components is None:
-            self.parse_components()
-            
-        all_components = set()
-        for recipe_comps in self.components.values():
-            all_components.update(recipe_comps.keys())
-            
-        return sorted(list(all_components))
-        
-    def save_to_json(self, output_path: str = "data/processed/recipes.json"):
-        """Сохранение рецептов в JSON формат"""
-        if self.components is None:
-            self.parse_components()
-            
-        # Преобразуем в формат, совместимый с DataLoader
-        recipes_list = []
-        for recipe_id, comp_dict in self.components.items():
-            # Находим соответствующую строку в DataFrame
-            recipe_row = self.recipes_df[self.recipes_df['id'].astype(str) == str(recipe_id)].iloc[0]
-            
-            recipe_data = {
-                'id': str(recipe_id),
-                'name': recipe_row.get('Название', ''),
-                'type': recipe_row.get('Тип', 'unknown'),
-                'components': comp_dict,
-                'total_weight': sum(comp_dict.values())
-            }
-            recipes_list.append(recipe_data)
-            
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(recipes_list, f, ensure_ascii=False, indent=2)
-            
-        logger.info(f"Рецепты сохранены в JSON: {output_path}")
-        
-    def process_pipeline(self, excel_path: Optional[str] = None, output_path: Optional[str] = None):
-        """Полный пайплайн обработки Excel -> JSON"""
-        if excel_path:
-            self.excel_path = Path(excel_path)
-            
-        self.load_excel()
-        self.parse_components()
-        
-        if output_path:
-            self.save_to_json(output_path)
-        else:
-            self.save_to_json()
-
-
-class ManifestDataLoader(DataLoader):
-    """Загрузчик данных для работы с манифестами изображений и рецептов"""
     
-    def __init__(self, manifest_dir: str = "data/processed"):
+    def vectorize_components(self, components: Dict[str, float]) -> np.ndarray:
         """
-        Инициализация загрузчика манифестов
-        
-        Args:
-            manifest_dir: Директория с CSV манифестами
-        """
-        super().__init__()
-        self.manifest_dir = Path(manifest_dir)
-        self.manifests = {}
-        self.image_cache = {}
-        
-    def load_manifest(self, manifest_name: str = "train") -> pd.DataFrame:
-        """
-        Загрузка манифеста по имени
-        
-        Args:
-            manifest_name: Имя манифеста (train, val, test, full)
-            
-        Returns:
-            DataFrame с данными манифеста
-        """
-        manifest_path = self.manifest_dir / f"data_manifest_{manifest_name}.csv"
-        
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Манифест не найден: {manifest_path}")
-        
-        df = pd.read_csv(manifest_path, encoding='utf-8')
-        logger.info(f"Загружен манифест '{manifest_name}': {len(df)} записей")
-        
-        self.manifests[manifest_name] = df
-        return df
-    
-    def load_recipes_dict(self, recipes_json_path: str = "data/processed/recipes.json") -> Dict:
-        """
-        Загрузка рецептов в словарь для быстрого доступа
-        
-        Args:
-            recipes_json_path: Путь к JSON файлу с рецептами
-            
-        Returns:
-            Словарь рецептов по ID
-        """
-        recipes = self.load_recipe_json(recipes_json_path)
-        recipes_dict = {}
-        
-        for recipe in recipes:
-            recipe_id = recipe['id']
-            recipes_dict[recipe_id] = {
-                'id': recipe_id,
-                'name': recipe.get('name', ''),
-                'type': recipe.get('type', 'unknown'),
-                'components': recipe.get('components', {}),
-                'total_weight': recipe.get('total_weight', 0)
-            }
-        
-        logger.info(f"Загружено {len(recipes_dict)} рецептов в словарь")
-        return recipes_dict
-    
-    def prepare_image_data(self, manifest_df: pd.DataFrame, 
-                          recipes_dict: Dict,
-                          target_size: Tuple[int, int] = (224, 224),
-                          use_test_images: bool = True) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Подготовка изображений и меток для обучения
-        
-        Args:
-            manifest_df: DataFrame манифеста
-            recipes_dict: Словарь рецептов
-            target_size: Размер изображений
-            use_test_images: Использовать тестовые изображения (для .txt файлов)
-            
-        Returns:
-            Кортеж (изображения, метки)
-        """
-        images = []
-        labels = []
-        failed_images = []
-        
-        # Получаем все уникальные компоненты для создания единого вектора признаков
-        all_components = set()
-        for recipe in recipes_dict.values():
-            all_components.update(recipe['components'].keys())
-        component_list = sorted(list(all_components))
-        
-        logger.info(f"Всего уникальных компонентов: {len(component_list)}")
-        
-        for idx, row in manifest_df.iterrows():
-            try:
-                image_path = Path(row['image_path'])
-                recipe_id = str(row['recipe_id'])
-                recipe_type = row.get('recipe_type', 'unknown')
-                
-                # Для тестовых данных всегда создаем тестовые изображения
-                # Вместо попытки загрузки реальных файлов
-                img_array = self._create_test_image(
-                    recipe_id=recipe_id,
-                    recipe_type=recipe_type,
-                    target_size=target_size
-                )
-                
-                # Получение рецепта и преобразование в вектор
-                recipe = recipes_dict.get(recipe_id)
-                if recipe is None:
-                    logger.warning(f"Рецепт с ID {recipe_id} не найден, пропускаем")
-                    continue
-                
-                # Преобразование компонентов в вектор
-                component_vector = self._components_to_vector(
-                    recipe['components'], 
-                    component_list
-                )
-                
-                images.append(img_array)
-                labels.append(component_vector)
-                
-                # Логируем успешное создание тестового изображения
-                if idx < 3:  # Логируем только первые 3 для примера
-                    logger.info(f"Создано тестовое изображение для рецепта {recipe_id} ({recipe_type})")
-                
-            except Exception as e:
-                failed_images.append(str(image_path))
-                logger.error(f"Ошибка обработки изображения {row['image_path']}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
-        if failed_images:
-            logger.warning(f"Не удалось обработать {len(failed_images)} изображений")
-        
-        logger.info(f"Успешно обработано {len(images)} изображений")
-        
-        # Проверяем, есть ли данные для возврата
-        if len(images) == 0:
-            return np.array([]), np.array([])
-        
-        return np.array(images), np.array(labels)
-    
-    def _create_test_image(self, recipe_id: str, recipe_type: str, 
-                          target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
-        """
-        Создание тестового изображения на основе ID и типа рецепта
-        
-        Args:
-            recipe_id: ID рецепта
-            recipe_type: Тип рецепта
-            target_size: Размер изображения
-            
-        Returns:
-            Тестовое изображение как numpy array
-        """
-        # Создаем детерминированное "изображение" на основе ID рецепта
-        seed = int(recipe_id) if recipe_id.isdigit() else abs(hash(recipe_id)) % 1000
-        np.random.seed(seed)
-        
-        height, width = target_size
-        channels = 3
-        
-        # Разные типы рецептов создают разные паттерны
-        if recipe_type == 'внутренняя':
-            # Более светлые тона для внутренней штукатурки
-            base_color = np.array([0.8, 0.8, 0.9])  # Светло-голубой
-            noise = np.random.randn(height, width, channels) * 0.1
-        elif recipe_type == 'фасадная':
-            # Серые тона для фасадной
-            base_color = np.array([0.6, 0.6, 0.6])  # Серый
-            noise = np.random.randn(height, width, channels) * 0.15
-        elif recipe_type == 'декоративная':
-            # Более яркие тона для декоративной
-            base_color = np.array([0.9, 0.8, 0.7])  # Бежевый
-            noise = np.random.randn(height, width, channels) * 0.2
-        else:
-            base_color = np.array([0.5, 0.5, 0.5])  # Нейтральный серый
-            noise = np.random.randn(height, width, channels) * 0.1
-        
-        # Создаем базовое изображение
-        image = np.ones((height, width, channels)) * base_color
-        
-        # Добавляем шум для имитации текстуры
-        image = image + noise
-        
-        # Обрезаем значения до [0, 1]
-        image = np.clip(image, 0, 1)
-        
-        return image.astype(np.float32)
-    
-    def _components_to_vector(self, components: Dict, component_list: List) -> np.ndarray:
-        """
-        Преобразование словаря компонентов в вектор
+        Векторизация компонентов для ML модели
         
         Args:
             components: Словарь компонентов
-            component_list: Список всех компонентов
             
         Returns:
-            Вектор значений компонентов
+            Вектор признаков
         """
-        vector = np.zeros(len(component_list), dtype=np.float32)
+        if not self.component_features or 'component_to_idx' not in self.component_features:
+            raise ValueError("Признаки компонентов не загружены. Сначала выполните load_excel()")
         
-        for i, component in enumerate(component_list):
-            if component in components:
-                # Нормализуем значения (предполагаем, что сумма ≈ 100)
-                vector[i] = components[component] / 100.0
+        vector_size = self.component_features['total_components']
+        vector = np.zeros(vector_size, dtype=np.float32)
+        
+        component_to_idx = self.component_features['component_to_idx']
+        
+        for component, value in components.items():
+            if component in component_to_idx:
+                idx = component_to_idx[component]
+                vector[idx] = value / 1000.0  # Нормализация к тоннам
         
         return vector
     
-    def _create_minimal_test_dataset(self, manifest_df: pd.DataFrame,
-                                   recipes_dict: Dict,
-                                   target_size: Tuple[int, int] = (224, 224)) -> Tuple[np.ndarray, np.ndarray]:
+    def get_recipe_by_category(self, category: str) -> List[RecipeData]:
         """
-        Создание минимального тестового датасета, если не удалось загрузить данные
+        Получение рецептов по категории
         
         Args:
-            manifest_df: DataFrame манифеста
-            recipes_dict: Словарь рецептов
-            target_size: Размер изображений
+            category: Категория рецепта
             
         Returns:
-            Кортеж (изображения, метки)
+            Список объектов RecipeData
         """
-        logger.info("Создание минимального тестового датасета...")
+        if self.df is None:
+            raise ValueError("Данные не загружены. Сначала выполните load_excel()")
         
-        images = []
-        labels = []
+        category_df = self.df[self.df['category'] == category]
+        recipes = []
         
-        # Получаем все уникальные компоненты
-        all_components = set()
-        for recipe in recipes_dict.values():
-            all_components.update(recipe['components'].keys())
-        component_list = sorted(list(all_components))
-        
-        # Создаем 5 тестовых изображений
-        for i in range(min(5, len(manifest_df))):
-            row = manifest_df.iloc[i]
-            recipe_id = str(row['recipe_id'])
-            recipe_type = row.get('recipe_type', 'unknown')
-            
-            # Создаем тестовое изображение
-            img_array = self._create_test_image(
-                recipe_id=recipe_id,
-                recipe_type=recipe_type,
-                target_size=target_size
+        for _, row in category_df.iterrows():
+            recipe = RecipeData(
+                name=row['recipe_name'],
+                category=category,
+                components=self.parse_components(row),
+                metadata={'excel_row': _}
             )
-            
-            # Получаем рецепт
-            recipe = recipes_dict.get(recipe_id)
-            if recipe:
-                # Преобразование компонентов в вектор
-                component_vector = self._components_to_vector(
-                    recipe['components'], 
-                    component_list
-                )
-                
-                images.append(img_array)
-                labels.append(component_vector)
+            recipes.append(recipe)
         
-        logger.info(f"Создано {len(images)} тестовых изображений")
-        
-        return np.array(images), np.array(labels)
+        return recipes
     
-    def get_dataset_info(self, manifest_name: str = "train") -> Dict:
+    def get_all_recipes(self, include_components: bool = True) -> List[RecipeData]:
         """
-        Получение информации о датасете
+        Получение всех рецептов
         
         Args:
-            manifest_name: Имя манифеста
+            include_components: Включать ли компоненты
             
         Returns:
-            Словарь с информацией
+            Список объектов RecipeData
         """
-        if manifest_name not in self.manifests:
-            self.load_manifest(manifest_name)
+        if self.df is None:
+            raise ValueError("Данные не загружены. Сначала выполните load_excel()")
         
-        df = self.manifests[manifest_name]
+        recipes = []
         
-        info = {
-            'total_samples': len(df),
-            'unique_recipes': df['recipe_id'].nunique(),
-            'recipe_types': df['recipe_type'].value_counts().to_dict(),
-            'file_extensions': df['image_path'].apply(
-                lambda x: Path(x).suffix
-            ).value_counts().to_dict(),
-            'split': manifest_name
+        for _, row in self.df.iterrows():
+            recipe = RecipeData(
+                name=row['recipe_name'],
+                category=row['category'],
+                components=self.parse_components(row) if include_components else {},
+                metadata={'excel_row': _}
+            )
+            recipes.append(recipe)
+        
+        self.recipes = recipes
+        return recipes
+    
+    def find_similar_recipes(self, target_components: Dict[str, float], 
+                            top_k: int = 5) -> List[Tuple[RecipeData, float]]:
+        """
+        Поиск похожих рецептов по компонентам
+        
+        Args:
+            target_components: Целевые компоненты
+            top_k: Количество возвращаемых результатов
+            
+        Returns:
+            Список кортежей (рецепт, оценка сходства)
+        """
+        if not self.recipes:
+            self.get_all_recipes()
+        
+        # Векторизация целевых компонентов
+        target_vector = self.vectorize_components(target_components)
+        
+        similarities = []
+        
+        for recipe in self.recipes:
+            # Векторизация компонентов рецепта
+            recipe_vector = self.vectorize_components(recipe.components)
+            
+            # Косинусное сходство
+            dot_product = np.dot(target_vector, recipe_vector)
+            norm_target = np.linalg.norm(target_vector)
+            norm_recipe = np.linalg.norm(recipe_vector)
+            
+            if norm_target > 0 and norm_recipe > 0:
+                similarity = dot_product / (norm_target * norm_recipe)
+            else:
+                similarity = 0.0
+            
+            similarities.append((recipe, similarity))
+        
+        # Сортировка по убыванию сходства
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        
+        return similarities[:top_k]
+    
+    def get_component_statistics(self) -> Dict[str, Any]:
+        """
+        Получение статистики по компонентам
+        
+        Returns:
+            Словарь со статистикой
+        """
+        if self.df is None:
+            raise ValueError("Данные не загружены. Сначала выполните load_excel()")
+        
+        stats = {
+            'total_recipes': len(self.df),
+            'categories': {},
+            'component_frequency': {},
+            'average_composition_by_category': {}
         }
         
-        return info
+        # Статистика по категориям
+        for category in self.categories:
+            category_df = self.df[self.df['category'] == category]
+            stats['categories'][category] = len(category_df)
+        
+        # Частота использования компонентов
+        component_columns = [col for col in self.df.columns 
+                           if col not in ['recipe_name', 'category'] 
+                           and not str(col).startswith('Unnamed')]
+        
+        for component in component_columns:
+            if component in self.df.columns:
+                non_zero = self.df[component].apply(
+                    lambda x: 1 if self._parse_float(x) > 0 else 0
+                ).sum()
+                stats['component_frequency'][component] = non_zero
+        
+        # Средний состав по категориям
+        for category in self.categories:
+            category_df = self.df[self.df['category'] == category]
+            avg_composition = {}
+            
+            for component in component_columns:
+                if component in category_df.columns:
+                    avg_value = category_df[component].apply(self._parse_float).mean()
+                    if avg_value > 0:
+                        avg_composition[component] = avg_value
+            
+            stats['average_composition_by_category'][category] = avg_composition
+        
+        return stats
     
-    def prepare_training_data(self, 
-                            train_manifest: str = "train",
-                            val_manifest: str = "val",
-                            test_manifest: str = "test",
-                            recipes_json: str = "data/processed/recipes.json",
-                            target_size: Tuple[int, int] = (224, 224)) -> Dict:
+    def save_to_json(self, output_path: str = "data/processed/recipes_with_categories.json"):
         """
-        Подготовка всех данных для обучения
+        Сохранение рецептов с категориями в JSON
         
         Args:
-            train_manifest: Имя манифеста для обучения
-            val_manifest: Имя манифеста для валидации
-            test_manifest: Имя манифеста для тестирования
-            recipes_json: Путь к JSON с рецептами
-            target_size: Размер изображений
+            output_path: Путь для сохранения
+        """
+        if not self.recipes:
+            self.get_all_recipes()
+        
+        output = {
+            'metadata': {
+                'total_recipes': len(self.recipes),
+                'categories': self.categories,
+                'component_groups': self.component_groups
+            },
+            'recipes': []
+        }
+        
+        for recipe in self.recipes:
+            recipe_data = {
+                'name': recipe.name,
+                'category': recipe.category,
+                'components': recipe.components,
+                'vectorized': self.vectorize_components(recipe.components).tolist(),
+                'metadata': recipe.metadata
+            }
+            output['recipes'].append(recipe_data)
+        
+        # Создание директории, если не существует
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"Рецепты сохранены в: {output_path}")
+        
+        # Также сохраняем анализ компонентов
+        analysis_path = Path(output_path).parent / "component_analysis.json"
+        self.analyzer.generate_report(str(analysis_path.parent))
+        
+        return output_path
+    
+    def process_pipeline(self, excel_path: str = None, 
+                        output_json: str = "data/processed/recipes_with_categories.json") -> Dict[str, Any]:
+        """
+        Полный пайплайн обработки данных
+        
+        Args:
+            excel_path: Путь к Excel файлу
+            output_json: Путь для сохранения JSON
             
         Returns:
-            Словарь с подготовленными данными
+            Словарь с результатами обработки
         """
-        logger.info("="*60)
-        logger.info("ПОДГОТОВКА ДАННЫХ ДЛЯ ОБУЧЕНИЯ МОДЕЛИ")
-        logger.info("="*60)
+        # Загрузка Excel
+        self.load_excel(excel_path)
         
-        # Загрузка рецептов
-        recipes_dict = self.load_recipes_dict(recipes_json)
+        # Получение всех рецептов
+        recipes = self.get_all_recipes()
         
-        # Загрузка и подготовка данных для каждой выборки
-        datasets = {}
+        # Сохранение в JSON
+        json_path = self.save_to_json(output_json)
         
-        for split_name in [train_manifest, val_manifest, test_manifest]:
-            logger.info(f"\nПодготовка данных для '{split_name}':")
-            
-            # Загрузка манифеста
-            manifest_df = self.load_manifest(split_name)
-            
-            # Подготовка изображений и меток
-            images, labels = self.prepare_image_data(
-                manifest_df=manifest_df,
-                recipes_dict=recipes_dict,
-                target_size=target_size,
-                use_test_images=True  # ВСЕГДА используем тестовые изображения для демо
-            )
-            
-            # Проверяем, есть ли данные
-            if len(images) == 0:
-                logger.warning(f"Нет данных для split '{split_name}'")
-                # Создаем минимальный набор данных для тестирования
-                logger.info(f"Создаем минимальный тестовый набор для '{split_name}'")
-                images, labels = self._create_minimal_test_dataset(
-                    manifest_df=manifest_df,
-                    recipes_dict=recipes_dict,
-                    target_size=target_size
-                )
-                
-            datasets[split_name] = {
-                'images': images,
-                'labels': labels,
-                'manifest': manifest_df,
-                'info': self.get_dataset_info(split_name)
-            }
-            
-            logger.info(f"  Изображений: {len(images)}")
-            logger.info(f"  Меток: {len(labels)}")
-            logger.info(f"  Размер изображений: {images.shape}")
+        # Получение статистики
+        stats = self.get_component_statistics()
         
-        # Проверяем, что все датасеты созданы
-        if len(datasets) == 0:
-            raise ValueError("Не удалось загрузить данные ни для одного split")
+        # Генерация отчета
+        report_path = self.analyzer.generate_report("reports")
         
-        logger.info("\n" + "="*60)
-        logger.info("ПОДГОТОВКА ДАННЫХ ЗАВЕРШЕНА")
-        logger.info("="*60)
+        result = {
+            'excel_path': self.excel_path,
+            'json_path': json_path,
+            'report_path': report_path,
+            'total_recipes': len(recipes),
+            'categories': stats['categories'],
+            'component_features': self.component_features
+        }
         
-        # Вывод общей статистики
-        total_images = sum(len(datasets[split]['images']) for split in datasets)
-        logger.info(f"Всего изображений: {total_images}")
+        logger.info(f"Пайплайн обработки завершен. Обработано рецептов: {len(recipes)}")
         
-        for split_name, data in datasets.items():
-            info = data['info']
-            logger.info(f"\n{split_name.upper()}:")
-            logger.info(f"  Образцов: {info['total_samples']}")
-            logger.info(f"  Уникальных рецептов: {info['unique_recipes']}")
-            logger.info(f"  Распределение типов: {info['recipe_types']}")
-        
-        return datasets
+        return result
+
+
+class TerraziteDataset(Dataset):
+    """Датасет для терразитовых составов с поддержкой категорий"""
     
-    @staticmethod
-    def get_component_names_from_json(json_path: str) -> List[str]:
-        """Получение списка компонентов из JSON файла"""
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                recipes = json.load(f)
+    def __init__(self, recipes_data: List[RecipeData], 
+                 image_dir: str = None,
+                 transform=None,
+                 include_components: bool = True):
+        """
+        Инициализация датасета
+        
+        Args:
+            recipes_data: Список объектов RecipeData
+            image_dir: Директория с изображениями
+            transform: Трансформации для изображений
+            include_components: Включать ли компоненты в данные
+        """
+        self.recipes = recipes_data
+        self.image_dir = Path(image_dir) if image_dir else None
+        self.transform = transform
+        self.include_components = include_components
+        
+        # Маппинг категорий в индексы
+        self.categories = sorted(set([r.category for r in recipes_data]))
+        self.category_to_idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        self.idx_to_category = {idx: cat for cat, idx in self.category_to_idx.items()}
+        
+        # Загрузка изображений
+        self.images = []
+        self._load_images()
+    
+    def _load_images(self):
+        """Загрузка путей к изображениям"""
+        if not self.image_dir:
+            return
+        
+        for recipe in self.recipes:
+            recipe_name_clean = recipe.name.replace('/', '_').replace('\\', '_')
+            image_patterns = [
+                self.image_dir / f"{recipe_name_clean}*.jpg",
+                self.image_dir / f"{recipe_name_clean}*.png",
+                self.image_dir / f"{recipe.name}*.jpg",
+                self.image_dir / f"{recipe.name}*.png",
+            ]
             
-            all_components = set()
-            for recipe in recipes:
-                all_components.update(recipe.get('components', {}).keys())
+            image_paths = []
+            for pattern in image_patterns:
+                image_paths.extend(list(self.image_dir.glob(pattern.name)))
             
-            return sorted(list(all_components))
-        except Exception as e:
-            logger.error(f"Ошибка загрузки компонентов: {e}")
-            return []
+            if image_paths:
+                recipe.image_paths = [str(p) for p in image_paths[:3]]  # Берем до 3 изображений
+                self.images.extend(recipe.image_paths)
+            else:
+                logger.warning(f"Изображения для рецепта {recipe.name} не найдены")
+    
+    def __len__(self) -> int:
+        """Количество элементов в датасете"""
+        return len(self.recipes) * max(1, len(self.images) // max(len(self.recipes), 1))
+    
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """Получение элемента по индексу"""
+        recipe_idx = idx % len(self.recipes)
+        recipe = self.recipes[recipe_idx]
+        
+        # Загрузка изображения
+        image = None
+        if recipe.image_paths:
+            img_idx = (idx // len(self.recipes)) % len(recipe.image_paths)
+            image_path = recipe.image_paths[img_idx]
+            image = DataLoader.load_image(image_path)
+            
+            if self.transform:
+                image = self.transform(image)
+        
+        # Подготовка компонентов
+        components = None
+        if self.include_components and recipe.components:
+            # Создаем вектор компонентов
+            components = np.array(list(recipe.components.values()), dtype=np.float32)
+            components = components / 1000.0  # Нормализация
+        
+        # Категория
+        category_idx = self.category_to_idx.get(recipe.category, 0)
+        
+        item = {
+            'name': recipe.name,
+            'category': category_idx,
+            'category_name': recipe.category,
+            'image': image if image is not None else torch.zeros((3, 224, 224)),
+            'components': torch.FloatTensor(components) if components is not None else torch.zeros(1),
+            'components_dict': recipe.components
+        }
+        
+        return item
+    
+    def get_category_distribution(self) -> Dict[str, int]:
+        """Получение распределения по категориям"""
+        distribution = {}
+        for recipe in self.recipes:
+            distribution[recipe.category] = distribution.get(recipe.category, 0) + 1
+        return distribution
 
 
-# Функция для быстрой проверки
-def test_manifest_loader():
-    """Тестирование ManifestDataLoader"""
-    print("Тестирование ManifestDataLoader...")
+def main():
+    """Основная функция для тестирования загрузчика"""
+    loader = RecipeLoader()
     
     try:
-        loader = ManifestDataLoader()
+        # Попытка загрузить Excel файл
+        excel_path = "data/raw/recipes.xlsx"
+        if not Path(excel_path).exists():
+            excel_path = "Рецептуры терразит.xlsx"
         
-        # Проверка загрузки манифеста
-        train_df = loader.load_manifest("train")
-        print(f"✓ Загружен манифест train: {len(train_df)} записей")
-        
-        # Проверка загрузки рецептов
-        recipes_dict = loader.load_recipes_dict()
-        print(f"✓ Загружено рецептов: {len(recipes_dict)}")
-        
-        # Проверка подготовки данных
-        datasets = loader.prepare_training_data(
-            train_manifest="train",
-            val_manifest="val",
-            test_manifest="test",
-            target_size=(224, 224)
-        )
-        
-        print("✓ Данные успешно подготовлены:")
-        for split_name, data in datasets.items():
-            print(f"  {split_name}: {len(data['images'])} изображений")
-        
-        return True
-        
+        if Path(excel_path).exists():
+            logger.info(f"Найден Excel файл: {excel_path}")
+            result = loader.process_pipeline(excel_path)
+            
+            print("\n" + "="*80)
+            print("РЕЗУЛЬТАТЫ ОБРАБОТКИ:")
+            print("="*80)
+            print(f"Обработано рецептов: {result['total_recipes']}")
+            print(f"Категории: {result['categories']}")
+            print(f"JSON сохранен: {result['json_path']}")
+            print(f"Отчеты сохранены: {result['report_path']}")
+            
+            # Пример поиска похожих рецептов
+            test_components = {
+                'Цемент белый ПЦ500': 100,
+                'Цемент серый ПЦ500, кг': 150,
+                'Песок лужский фр.0-0,63мм, кг': 342
+            }
+            
+            similar = loader.find_similar_recipes(test_components, top_k=3)
+            print("\nПОХОЖИЕ РЕЦЕПТЫ:")
+            for recipe, similarity in similar:
+                print(f"  - {recipe.name} (сходство: {similarity:.3f})")
+            
+        else:
+            logger.warning("Excel файл не найден. Запустите create_test_excel.py для создания тестовых данных.")
+            
     except Exception as e:
-        print(f"✗ Ошибка: {e}")
+        logger.error(f"Ошибка при обработке: {e}")
         import traceback
         traceback.print_exc()
-        return False
 
 
 if __name__ == "__main__":
-    # Пример использования
-    loader = DataLoader()
-    
-    # Загрузка данных
-    recipes = loader.load_recipes()
-    print(f"Загружено рецептов: {len(recipes)}")
-    
-    # Подготовка DataFrame
-    df = loader.prepare_dataframe()
-    print(f"DataFrame: {df.shape}")
-    
-    # Статистика
-    stats = loader.get_component_statistics()
-    print(f"\nТоп-10 компонентов по использованию:")
-    print(stats.head(10))
-    
-    # Разделение данных
-    X_train, X_test, y_train, y_test = loader.split_data()
-    print(f"\nРазделение данных:")
-    print(f"Обучающая выборка: {X_train.shape[0]} образцов")
-    print(f"Тестовая выборка: {X_test.shape[0]} образцов")
-    
-    # Тестирование ManifestDataLoader
-    print("\n" + "="*60)
-    print("Тестирование ManifestDataLoader:")
-    print("="*60)
-    
-    success = test_manifest_loader()
-    if success:
-        print("\n✅ ManifestDataLoader работает корректно!")
-        print("\nСледующий шаг:")
-        print("Обновите scripts/train_model.py для использования ManifestDataLoader")
-    else:
-        print("\n❌ Обнаружены проблемы в ManifestDataLoader")
+    main()
