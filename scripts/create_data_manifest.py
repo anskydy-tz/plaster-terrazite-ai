@@ -1,6 +1,6 @@
 """
 Создание манифеста данных для проекта Terrazite AI.
-Исправленная версия без эмодзи для Windows.
+Исправленная версия для Windows с учетом структуры типов рецептов.
 """
 import pandas as pd
 from pathlib import Path
@@ -8,7 +8,7 @@ import json
 import logging
 import sys
 import argparse
-from sklearn.model_selection import train_test_split
+import numpy as np
 
 # Добавляем путь для импорта модулей проекта
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,7 +19,7 @@ logger = setup_logger()
 
 
 class DataManifestCreator:
-    """Создатель манифеста данных с проверкой и ML-готовым выводом"""
+    """Создатель манифеста данных с учетом структуры типов рецептов"""
     
     def __init__(self):
         self.data_dir = Path("data")
@@ -48,11 +48,10 @@ class DataManifestCreator:
                 recipe_folders = [d for d in path.iterdir() if d.is_dir()]
                 results[name]['subfolders_count'] = len(recipe_folders)
                 
-                # Подсчет общего количества изображений (включая .txt для тестов)
+                # Подсчет общего количества изображений
                 image_count = 0
                 for folder in recipe_folders:
-                    images = (list(folder.glob('*.jpg')) + list(folder.glob('*.png')) + 
-                             list(folder.glob('*.txt')))  # Добавляем .txt файлы
+                    images = list(folder.glob('*.jpg')) + list(folder.glob('*.png')) + list(folder.glob('*.txt'))
                     image_count += len(images)
                 results[name]['image_count'] = image_count
         
@@ -71,7 +70,7 @@ class DataManifestCreator:
             logger.info(f"Загружено рецептов: {len(recipes_df)}")
             
             # Проверка обязательных колонок
-            required_columns = ['id', 'название']
+            required_columns = ['id', 'название', 'тип']
             missing_columns = [col for col in required_columns if col not in recipes_df.columns]
             
             if missing_columns:
@@ -83,16 +82,80 @@ class DataManifestCreator:
             logger.error(f"Ошибка загрузки Excel файла: {e}")
             return None
     
-    def create_detailed_manifest(self, recipes_df):
-        """Создание детального JSON манифеста"""
+    def analyze_recipe_structure(self, recipes_df):
+        """Анализ структуры рецептов по типам и оттенкам"""
+        analysis = {
+            'recipe_types': {},
+            'recipes_per_type': {},
+            'components_analysis': {}
+        }
+        
+        # Группировка по типам рецептов
+        if 'тип' in recipes_df.columns:
+            type_counts = recipes_df['тип'].value_counts()
+            analysis['recipe_types'] = type_counts.to_dict()
+            
+            # Для каждого типа собираем рецепты
+            for recipe_type in recipes_df['тип'].unique():
+                if pd.isna(recipe_type):
+                    continue
+                    
+                type_recipes = recipes_df[recipes_df['тип'] == recipe_type]
+                analysis['recipes_per_type'][recipe_type] = {
+                    'count': len(type_recipes),
+                    'recipe_ids': type_recipes['id'].astype(str).tolist()
+                }
+        
+        # Анализ компонентов для определения оттенков
+        component_cols = [col for col in recipes_df.columns 
+                         if col not in ['id', 'название', 'тип', 'описание', 'description', 'name', 'type']]
+        
+        if component_cols:
+            # Нормализация компонентов
+            components_data = recipes_df[component_cols].fillna(0)
+            
+            # Для каждого рецепта вычисляем "цветовой профиль" на основе пигментов
+            pigment_cols = [col for col in component_cols if 'пигмент' in col.lower() or 'красн' in col.lower() 
+                          or 'син' in col.lower() or 'желт' in col.lower() or 'цвет' in col.lower()]
+            
+            if pigment_cols:
+                analysis['components_analysis']['pigment_columns'] = pigment_cols
+                analysis['components_analysis']['pigment_stats'] = {
+                    col: {
+                        'min': float(components_data[col].min()),
+                        'max': float(components_data[col].max()),
+                        'mean': float(components_data[col].mean())
+                    } for col in pigment_cols
+                }
+        
+        return analysis
+    
+    def create_detailed_manifest(self, recipes_df, structure_analysis):
+        """Создание детального JSON манифеста с учетом структуры типов"""
         manifest = {
             'statistics': {
                 'total_recipes': len(recipes_df),
                 'columns': list(recipes_df.columns),
-                'missing_values': recipes_df.isnull().sum().to_dict()
+                'missing_values': recipes_df.isnull().sum().to_dict(),
+                'recipe_types': structure_analysis['recipe_types'],
+                'recipes_per_type': structure_analysis['recipes_per_type']
             },
-            'recipes': []
+            'recipes': [],
+            'recipe_groups': {}  # Группировка рецептов по типам и оттенкам
         }
+        
+        # Группируем рецепты по типам
+        if 'тип' in recipes_df.columns:
+            for recipe_type in recipes_df['тип'].unique():
+                if pd.isna(recipe_type):
+                    continue
+                    
+                type_recipes = recipes_df[recipes_df['тип'] == recipe_type]
+                manifest['recipe_groups'][recipe_type] = {
+                    'count': len(type_recipes),
+                    'recipe_ids': type_recipes['id'].astype(str).tolist(),
+                    'description': f"Рецепты типа '{recipe_type}' с разными оттенками штукатурки"
+                }
         
         # Информация по каждому рецепту
         for idx, row in recipes_df.iterrows():
@@ -107,21 +170,27 @@ class DataManifestCreator:
                 'id': recipe_id,
                 'name': row.get('название', row.get('name', f'Рецепт {recipe_id}')),
                 'type': row.get('тип', row.get('type', 'unknown')),
+                'description': row.get('описание', row.get('description', '')),
                 'has_images': image_dir.exists(),
                 'image_count': 0,
                 'image_files': [],
-                'components': {}
+                'components': {},
+                'pigment_profile': {}  # Профиль пигментов для определения оттенка
             }
             
             # Добавляем компоненты
             for col in component_columns:
                 if col in row and pd.notna(row[col]):
-                    recipe_info['components'][col] = float(row[col])
+                    value = float(row[col])
+                    recipe_info['components'][col] = value
+                    
+                    # Выделяем пигменты в отдельный профиль
+                    if 'пигмент' in col.lower() or 'красн' in col.lower() or 'син' in col.lower() or 'желт' in col.lower():
+                        recipe_info['pigment_profile'][col] = value
             
-            # Информация об изображениях (включая .txt файлы)
+            # Информация об изображениях
             if image_dir.exists():
-                image_files = (list(image_dir.glob('*.jpg')) + list(image_dir.glob('*.png')) + 
-                              list(image_dir.glob('*.txt')))  # Добавляем .txt файлы
+                image_files = list(image_dir.glob('*.jpg')) + list(image_dir.glob('*.png')) + list(image_dir.glob('*.txt'))
                 recipe_info['image_count'] = len(image_files)
                 recipe_info['image_files'] = [str(f.relative_to(self.raw_dir)) for f in image_files]
             
@@ -130,7 +199,7 @@ class DataManifestCreator:
         # Сохранение детального JSON манифеста
         manifest_path = self.data_dir / "data_manifest_detailed.json"
         with open(manifest_path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+            json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
         
         logger.info(f"Детальный манифест создан: {manifest_path}")
         
@@ -140,20 +209,20 @@ class DataManifestCreator:
         
         logger.info(f"Рецепты с изображениями: {recipes_with_images}/{len(recipes_df)}")
         logger.info(f"Всего изображений: {total_images}")
+        logger.info(f"Группы рецептов по типам: {list(manifest['recipe_groups'].keys())}")
         
         return manifest
     
     def create_ml_ready_manifest(self, detailed_manifest):
-        """Создание CSV манифестов для ML"""
+        """Создание CSV манифестов для ML с группировкой по типам"""
         ml_entries = []
         
         for recipe in detailed_manifest['recipes']:
             if recipe['has_images'] and recipe['image_count'] > 0:
                 for img_path in recipe['image_files']:
-                    # Преобразуем .txt в .jpg для совместимости с ML пайплайном
+                    # Для тестовых .txt файлов заменяем расширение на .jpg для совместимости
                     img_path_str = str(img_path)
                     if img_path_str.endswith('.txt'):
-                        # Заменяем .txt на .jpg для совместимости
                         img_path_str = img_path_str.replace('.txt', '.jpg')
                     
                     ml_entries.append({
@@ -161,7 +230,7 @@ class DataManifestCreator:
                         'recipe_id': recipe['id'],
                         'recipe_name': recipe['name'],
                         'recipe_type': recipe['type'],
-                        'split': 'unassigned'  # Будет назначен позже
+                        'split': 'unassigned'
                     })
         
         if not ml_entries:
@@ -171,76 +240,72 @@ class DataManifestCreator:
         # Создаем DataFrame
         df = pd.DataFrame(ml_entries)
         
-        # Разделяем данные на train/val/test
-        if df['recipe_id'].nunique() > 1:
-            # Стратифицированное разделение по recipe_id
-            unique_recipes = df['recipe_id'].unique()
-            recipe_types = df.set_index('recipe_id')['recipe_type'].to_dict()
-            
-            # Разделяем ID рецептов
-            train_ids, temp_ids = train_test_split(
-                unique_recipes, test_size=0.3, random_state=42,
-                stratify=[recipe_types.get(id, 'unknown') for id in unique_recipes]
-            )
-            val_ids, test_ids = train_test_split(
-                temp_ids, test_size=0.5, random_state=42,
-                stratify=[recipe_types.get(id, 'unknown') for id in temp_ids]
-            )
-            
-            # Назначаем split
-            def assign_split(recipe_id):
-                if recipe_id in train_ids:
-                    return 'train'
-                elif recipe_id in val_ids:
-                    return 'val'
-                else:
-                    return 'test'
-            
-            df['split'] = df['recipe_id'].apply(assign_split)
-        else:
-            # Если только один рецепт, просто разделяем изображения
-            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-            n = len(df)
-            df.loc[:int(n*0.7), 'split'] = 'train'
-            df.loc[int(n*0.7):int(n*0.85), 'split'] = 'val'
-            df.loc[int(n*0.85):, 'split'] = 'test'
+        # УПРОЩЕННОЕ РАЗДЕЛЕНИЕ БЕЗ СТРАТИФИКАЦИИ
+        # Перемешиваем данные
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        
+        # Разделяем на train/val/test (70/15/15)
+        n = len(df)
+        train_end = int(n * 0.7)
+        val_end = train_end + int(n * 0.15)
+        
+        # Назначаем сплиты
+        splits = []
+        for i in range(n):
+            if i < train_end:
+                splits.append('train')
+            elif i < val_end:
+                splits.append('val')
+            else:
+                splits.append('test')
+        
+        df['split'] = splits
+        
+        # Проверяем, что в каждом сплите есть хотя бы по одному рецепту каждого типа
+        for split_name in ['train', 'val', 'test']:
+            split_df = df[df['split'] == split_name]
+            logger.info(f"{split_name}: {len(split_df)} записей, типы: {split_df['recipe_type'].value_counts().to_dict()}")
         
         # Сохраняем отдельные CSV файлы
         self.processed_dir.mkdir(exist_ok=True)
         
-        splits = {
-            'train': df[df['split'] == 'train'],
-            'val': df[df['split'] == 'val'],
-            'test': df[df['split'] == 'test'],
-            'all': df
+        train_df = df[df['split'] == 'train']
+        val_df = df[df['split'] == 'val']
+        test_df = df[df['split'] == 'test']
+        
+        train_path = self.processed_dir / 'data_manifest_train.csv'
+        val_path = self.processed_dir / 'data_manifest_val.csv'
+        test_path = self.processed_dir / 'data_manifest_test.csv'
+        full_path = self.processed_dir / 'data_manifest_full.csv'
+        
+        train_df.to_csv(train_path, index=False, encoding='utf-8')
+        val_df.to_csv(val_path, index=False, encoding='utf-8')
+        test_df.to_csv(test_path, index=False, encoding='utf-8')
+        df.to_csv(full_path, index=False, encoding='utf-8')
+        
+        saved_files = {
+            'train': {'path': str(train_path), 'count': len(train_df)},
+            'val': {'path': str(val_path), 'count': len(val_df)},
+            'test': {'path': str(test_path), 'count': len(test_df)},
+            'all': {'path': str(full_path), 'count': len(df)}
         }
         
-        saved_files = {}
-        for split_name, split_df in splits.items():
-            if split_name == 'all':
-                filename = 'data_manifest_full.csv'
-            else:
-                filename = f'data_manifest_{split_name}.csv'
-            
-            filepath = self.processed_dir / filename
-            split_df.to_csv(filepath, index=False, encoding='utf-8')
-            saved_files[split_name] = {
-                'path': str(filepath),
-                'count': len(split_df)
-            }
-            
-            logger.info(f"{split_name}: {len(split_df)} записей -> {filename}")
+        for split_name, info in saved_files.items():
+            if split_name != 'all':
+                logger.info(f"{split_name}: {info['count']} записей -> {Path(info['path']).name}")
         
         # Сохраняем статистику
         stats = {
             'total_ml_records': len(df),
-            'records_by_split': {k: len(v) for k, v in splits.items() if k != 'all'},
+            'records_by_split': {k: v['count'] for k, v in saved_files.items() if k != 'all'},
             'unique_recipes': df['recipe_id'].nunique(),
-            'records_per_recipe': df.groupby('recipe_id').size().to_dict(),
-            'split_percentage': {
-                'train': f"{len(splits['train'])/len(df)*100:.1f}%",
-                'val': f"{len(splits['val'])/len(df)*100:.1f}%",
-                'test': f"{len(splits['test'])/len(df)*100:.1f}%"
+            'recipe_types_distribution': df['recipe_type'].value_counts().to_dict(),
+            'split_distribution': {
+                split_name: {
+                    'count': len(df[df['split'] == split_name]),
+                    'percentage': f"{len(df[df['split'] == split_name])/len(df)*100:.1f}%",
+                    'recipe_types': df[df['split'] == split_name]['recipe_type'].value_counts().to_dict()
+                } for split_name in ['train', 'val', 'test']
             }
         }
         
@@ -251,6 +316,68 @@ class DataManifestCreator:
         logger.info(f"ML статистика сохранена: {stats_path}")
         
         return saved_files
+    
+    def create_recipe_type_report(self, detailed_manifest):
+        """Создание отчета по типам рецептов и их оттенкам"""
+        report = {
+            'recipe_types_summary': {},
+            'pigment_analysis': {},
+            'recommendations': []
+        }
+        
+        # Анализируем каждый тип рецептов
+        for recipe_type, group_info in detailed_manifest.get('recipe_groups', {}).items():
+            recipe_ids = group_info['recipe_ids']
+            type_recipes = [r for r in detailed_manifest['recipes'] if r['id'] in recipe_ids]
+            
+            report['recipe_types_summary'][recipe_type] = {
+                'recipe_count': len(type_recipes),
+                'recipes_with_images': sum(1 for r in type_recipes if r['has_images']),
+                'total_images': sum(r['image_count'] for r in type_recipes),
+                'recipe_ids': recipe_ids
+            }
+            
+            # Анализ пигментов для этого типа
+            pigment_data = []
+            for recipe in type_recipes:
+                if recipe['pigment_profile']:
+                    pigment_data.append(recipe['pigment_profile'])
+            
+            if pigment_data:
+                # Преобразуем в DataFrame для анализа
+                pigment_df = pd.DataFrame(pigment_data)
+                report['pigment_analysis'][recipe_type] = {
+                    'pigment_columns': list(pigment_df.columns),
+                    'statistics': {
+                        col: {
+                            'min': float(pigment_df[col].min()),
+                            'max': float(pigment_df[col].max()),
+                            'mean': float(pigment_df[col].mean()),
+                            'std': float(pigment_df[col].std())
+                        } for col in pigment_df.columns
+                    }
+                }
+        
+        # Рекомендации
+        for recipe_type, summary in report['recipe_types_summary'].items():
+            if summary['recipes_with_images'] > 0:
+                report['recommendations'].append(
+                    f"Тип '{recipe_type}': {summary['recipes_with_images']} рецептов с изображениями, "
+                    f"{summary['total_images']} изображений. Готов к обучению модели."
+                )
+            else:
+                report['recommendations'].append(
+                    f"Тип '{recipe_type}': нет изображений. Добавьте фотографии образцов штукатурки."
+                )
+        
+        # Сохраняем отчет
+        report_path = self.processed_dir / 'recipe_type_analysis.json'
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Отчет по типам рецептов сохранен: {report_path}")
+        
+        return report
     
     def process(self):
         """Основной процесс создания манифестов"""
@@ -276,11 +403,19 @@ class DataManifestCreator:
         if recipes_df is None:
             return False
         
-        # 3. Создание детального JSON манифеста
-        logger.info("\nСоздание детального манифеста...")
-        detailed_manifest = self.create_detailed_manifest(recipes_df)
+        # 3. Анализ структуры рецептов
+        logger.info("\nАнализ структуры рецептов...")
+        structure_analysis = self.analyze_recipe_structure(recipes_df)
         
-        # 4. Создание ML-готовых CSV манифестов
+        # 4. Создание детального JSON манифеста
+        logger.info("\nСоздание детального манифеста...")
+        detailed_manifest = self.create_detailed_manifest(recipes_df, structure_analysis)
+        
+        # 5. Создание отчета по типам рецептов
+        logger.info("\nСоздание отчета по типам рецептов...")
+        type_report = self.create_recipe_type_report(detailed_manifest)
+        
+        # 6. Создание ML-готовых CSV манифестов
         logger.info("\nСоздание манифестов для ML...")
         ml_manifests = self.create_ml_ready_manifest(detailed_manifest)
         
@@ -291,15 +426,22 @@ class DataManifestCreator:
             
             logger.info("\nСозданные файлы:")
             for split_name, info in ml_manifests.items():
-                logger.info(f"  * {Path(info['path']).name}: {info['count']} записей")
+                if split_name != 'all':
+                    logger.info(f"  * {Path(info['path']).name}: {info['count']} записей")
             
-            logger.info(f"  * data_manifest_detailed.json: детальная информация")
+            logger.info(f"  * data_manifest_detailed.json: детальная информация о рецептах")
+            logger.info(f"  * recipe_type_analysis.json: анализ типов рецептов и оттенков")
             logger.info(f"  * ml_data_statistics.json: статистика для ML")
+            
+            # Вывод рекомендаций
+            logger.info("\nРекомендации:")
+            for rec in type_report.get('recommendations', []):
+                logger.info(f"  * {rec}")
             
             logger.info("\nСледующие шаги:")
             logger.info("  1. Проверьте созданные файлы в data/ и data/processed/")
             logger.info("  2. Запустите обучение модели: python scripts/train_model.py")
-            logger.info("  3. Модель теперь будет использовать реальные данные вместо синтетических")
+            logger.info("  3. Для реальных данных замените .txt файлы на фотографии .jpg/.png")
             
             return True
         else:
@@ -311,18 +453,37 @@ class DataManifestCreator:
 def main():
     """Точка входа"""
     parser = argparse.ArgumentParser(description='Создание манифестов данных для Terrazite AI')
-    parser.add_argument('--skip-ml', action='store_true', help='Пропустить создание ML манифестов')
+    parser.add_argument('--skip-ml', action='store_true', 
+                       help='Пропустить создание ML манифестов (только детальный манифест)')
+    parser.add_argument('--analyze-types', action='store_true',
+                       help='Только анализ типов рецептов без создания ML манифестов')
+    
     args = parser.parse_args()
     
     creator = DataManifestCreator()
-    success = creator.process()
     
-    if success:
-        print("\nПроцесс завершен успешно!")
-        print("Проверьте созданные файлы в директории data/")
+    if args.analyze_types:
+        # Только анализ типов
+        recipes_df = creator.load_and_validate_data()
+        if recipes_df is not None:
+            structure_analysis = creator.analyze_recipe_structure(recipes_df)
+            detailed_manifest = creator.create_detailed_manifest(recipes_df, structure_analysis)
+            creator.create_recipe_type_report(detailed_manifest)
+            print("\nАнализ типов рецептов завершен.")
     else:
-        print("\nВ процессе возникли ошибки")
-        print("Проверьте наличие исходных данных")
+        # Полный процесс
+        success = creator.process()
+        
+        if success:
+            print("\n" + "="*60)
+            print("ПРОЦЕСС СОЗДАНИЯ МАНИФЕСТА ЗАВЕРШЕН УСПЕШНО!")
+            print("="*60)
+            print("\nСозданные файлы доступны в директориях:")
+            print("  data/ - детальный манифест и отчеты")
+            print("  data/processed/ - ML-готовые манифесты")
+        else:
+            print("\nВ процессе возникли ошибки")
+            print("Проверьте наличие исходных данных")
 
 
 if __name__ == "__main__":
