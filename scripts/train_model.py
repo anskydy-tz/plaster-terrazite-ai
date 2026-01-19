@@ -31,7 +31,7 @@ def prepare_training_data_from_manifest(data_dir: str, target_size=(224, 224)):
         target_size: Размер изображений
     
     Returns:
-        (X_train, y_train), (X_val, y_val), (X_test, y_test), component_names
+        (X_train, y_train), (X_val, y_val), (X_test, y_test), component_names, idx_to_type
     """
     logger.info(f"Загрузка данных из манифестов в {data_dir}")
     
@@ -123,26 +123,6 @@ def prepare_training_data_from_manifest(data_dir: str, target_size=(224, 224)):
         return create_synthetic_data()
 
 
-def get_component_names_from_json(json_path):
-    """Вспомогательная функция для получения имен компонентов из JSON"""
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            recipes = json.load(f)
-        
-        all_components = set()
-        for recipe in recipes:
-            all_components.update(recipe.get('components', {}).keys())
-        
-        return sorted(list(all_components))
-    except Exception as e:
-        logger.error(f"Ошибка загрузки компонентов: {e}")
-        return []
-
-
-# Добавляем метод в ManifestDataLoader через monkey patch для совместимости
-ManifestDataLoader.get_component_names_from_json = staticmethod(get_component_names_from_json)
-
-
 def create_synthetic_data():
     """
     Создание синтетических данных для тестирования (резервный вариант)
@@ -199,7 +179,7 @@ def create_synthetic_data():
 
 
 def train_model(args):
-    """Основная функция обучения"""
+    """Основная функции обучения"""
     logger.info("="*60)
     logger.info("🚀 НАЧАЛО ОБУЧЕНИЯ МОДЕЛИ TERRAZITE AI")
     logger.info("="*60)
