@@ -1,22 +1,48 @@
+# Основные зависимости
 -r requirements.txt
+-r requirements-ml.txt
+
+# Веб-интерфейс
 streamlit==1.28.0
-plotly==5.17.0
-matplotlib==3.8.0
+
+# Jupyter для разработки
 jupyter==1.0.0
 notebook==6.5.5
+ipython==8.18.1
+
+# Тестирование
 pytest==7.4.0
 pytest-cov==4.1.0
 pytest-asyncio==0.21.0
 pytest-xdist==3.5.0
 pytest-mock==3.12.0
 coverage==7.3.2
-pydantic==2.5.0
+
+# API тестирование
 httpx==0.25.1
+requests==2.31.0
+
+# База данных (опционально)
 SQLAlchemy==2.0.23
 alembic==1.12.1
-click==8.1.7
-tqdm==4.66.1
+
+# Аутентификация (опционально)
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+
+# Фоновые задачи (опционально)
 redis==5.0.1
 celery==5.3.4
+
+# Документация
+mkdocs==1.5.3
+mkdocs-material==9.5.3
+
+# Линтинг и форматирование
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.0
+pre-commit==3.5.0
+
+# Мокирование
+freezegun==1.2.2
