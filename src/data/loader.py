@@ -8,13 +8,24 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import logging
 import sys
+import os
 
 # Добавляем путь для импорта модулей проекта
-sys.path.insert(0, str(Path(__file__).parent.parent))
+current_dir = Path(__file__).parent
+project_root = current_dir.parent.parent
+sys.path.insert(0, str(project_root))
 
-from src.utils.logger import setup_logger
-
-logger = setup_logger(__name__)
+try:
+    from src.utils.logger import setup_logger
+    logger = setup_logger(__name__)
+except ImportError as e:
+    # Создаем простой логгер как fallback
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Не удалось импортировать setup_logger: {e}. Используется basicConfig")
 
 
 class DataLoader:
