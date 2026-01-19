@@ -7,8 +7,15 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import logging
+import sys
 
-logger = logging.getLogger(__name__)
+# Добавляем путь для импорта модулей проекта
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 
 class DataLoader:
     """Класс для загрузки данных рецептов терразитовой штукатурки"""
@@ -309,34 +316,6 @@ class RecipeLoader:
             self.save_to_json()
 
 
-if __name__ == "__main__":
-    # Пример использования
-    loader = DataLoader()
-    
-    # Загрузка данных
-    recipes = loader.load_recipes()
-    print(f"Загружено рецептов: {len(recipes)}")
-    
-    # Подготовка DataFrame
-    df = loader.prepare_dataframe()
-    print(f"DataFrame: {df.shape}")
-    
-    # Статистика
-    stats = loader.get_component_statistics()
-    print(f"\nТоп-10 компонентов по использованию:")
-    print(stats.head(10))
-    
-    # Разделение данных
-    X_train, X_test, y_train, y_test = loader.split_data()
-    print(f"\nРазделение данных:")
-    print(f"Обучающая выборка: {X_train.shape[0]} образцов")
-    print(f"Тестовая выборка: {X_test.shape[0]} образцов")
-    """
-"""
-Модификация DataLoader для поддержки загрузки данных через манифесты
-Добавляем в конец файла src/data/loader.py
-"""
-
 class ManifestDataLoader(DataLoader):
     """Загрузчик данных для работы с манифестами изображений и рецептов"""
     
@@ -347,6 +326,7 @@ class ManifestDataLoader(DataLoader):
         Args:
             manifest_dir: Директория с CSV манифестами
         """
+        super().__init__()
         self.manifest_dir = Path(manifest_dir)
         self.manifests = {}
         self.image_cache = {}
@@ -401,7 +381,7 @@ class ManifestDataLoader(DataLoader):
     def prepare_image_data(self, manifest_df: pd.DataFrame, 
                           recipes_dict: Dict,
                           target_size: Tuple[int, int] = (224, 224),
-                          use_test_images: bool = True) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+                          use_test_images: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
         Подготовка изображений и меток для обучения
         
@@ -470,6 +450,11 @@ class ManifestDataLoader(DataLoader):
             logger.warning(f"Не удалось обработать {len(failed_images)} изображений")
         
         logger.info(f"Успешно обработано {len(images)} изображений")
+        
+        # Проверяем, есть ли данные для возврата
+        if len(images) == 0:
+            return np.array([]), np.array([])
+        
         return np.array(images), np.array(labels)
     
     def _create_test_image(self, recipe_id: str, recipe_type: str, 
@@ -486,7 +471,7 @@ class ManifestDataLoader(DataLoader):
             Тестовое изображение как numpy array
         """
         # Создаем детерминированное "изображение" на основе ID рецепта
-        seed = int(recipe_id) if recipe_id.isdigit() else hash(recipe_id) % 1000
+        seed = int(recipe_id) if recipe_id.isdigit() else abs(hash(recipe_id)) % 1000
         np.random.seed(seed)
         
         height, width = target_size
@@ -610,6 +595,11 @@ class ManifestDataLoader(DataLoader):
                 use_test_images=True  # Используем тестовые изображения для .txt файлов
             )
             
+            # Проверяем, есть ли данные
+            if len(images) == 0:
+                logger.warning(f"Нет данных для split '{split_name}'")
+                continue
+                
             datasets[split_name] = {
                 'images': images,
                 'labels': labels,
@@ -619,7 +609,11 @@ class ManifestDataLoader(DataLoader):
             
             logger.info(f"  Изображений: {len(images)}")
             logger.info(f"  Меток: {len(labels)}")
-            logger.info(f"  Размер изображений: {images.shape if len(images) > 0 else 'N/A'}")
+            logger.info(f"  Размер изображений: {images.shape}")
+        
+        # Проверяем, что все датасеты созданы
+        if len(datasets) == 0:
+            raise ValueError("Не удалось загрузить данные ни для одного split")
         
         logger.info("\n" + "="*60)
         logger.info("ПОДГОТОВКА ДАННЫХ ЗАВЕРШЕНА")
@@ -637,6 +631,22 @@ class ManifestDataLoader(DataLoader):
             logger.info(f"  Распределение типов: {info['recipe_types']}")
         
         return datasets
+    
+    @staticmethod
+    def get_component_names_from_json(json_path: str) -> List[str]:
+        """Получение списка компонентов из JSON файла"""
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                recipes = json.load(f)
+            
+            all_components = set()
+            for recipe in recipes:
+                all_components.update(recipe.get('components', {}).keys())
+            
+            return sorted(list(all_components))
+        except Exception as e:
+            logger.error(f"Ошибка загрузки компонентов: {e}")
+            return []
 
 
 # Функция для быстрой проверки
@@ -677,7 +687,33 @@ def test_manifest_loader():
 
 
 if __name__ == "__main__":
-    # Запуск теста при прямом выполнении файла
+    # Пример использования
+    loader = DataLoader()
+    
+    # Загрузка данных
+    recipes = loader.load_recipes()
+    print(f"Загружено рецептов: {len(recipes)}")
+    
+    # Подготовка DataFrame
+    df = loader.prepare_dataframe()
+    print(f"DataFrame: {df.shape}")
+    
+    # Статистика
+    stats = loader.get_component_statistics()
+    print(f"\nТоп-10 компонентов по использованию:")
+    print(stats.head(10))
+    
+    # Разделение данных
+    X_train, X_test, y_train, y_test = loader.split_data()
+    print(f"\nРазделение данных:")
+    print(f"Обучающая выборка: {X_train.shape[0]} образцов")
+    print(f"Тестовая выборка: {X_test.shape[0]} образцов")
+    
+    # Тестирование ManifestDataLoader
+    print("\n" + "="*60)
+    print("Тестирование ManifestDataLoader:")
+    print("="*60)
+    
     success = test_manifest_loader()
     if success:
         print("\n✅ ManifestDataLoader работает корректно!")
