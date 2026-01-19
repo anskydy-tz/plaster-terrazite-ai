@@ -1,259 +1,446 @@
+#!/usr/bin/env python3
 """
-Обработчик Excel файла с рецептами терразитовой штукатурки
-Преобразует Excel в структурированный JSON формат
+Скрипт для обработки Excel файла с рецептами терразитовой штукатурки
+Интегрирован с ComponentAnalyzer для анализа компонентов по категориям
 """
-import pandas as pd
-import numpy as np
-import json
-import os
 import sys
+import os
 from pathlib import Path
-import matplotlib.pyplot as plt
 
-# Добавляем путь для импорта модулей проекта
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Добавляем путь к src для импорта модулей
+sys.path.append(str(Path(__file__).parent.parent))
+
+import pandas as pd
+import json
+import argparse
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 from src.data.loader import RecipeLoader
+from src.data.component_analyzer import ComponentAnalyzer
+from src.utils.config import setup_config
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
-class ExcelProcessor:
-    def __init__(self, excel_path):
-        self.excel_path = excel_path
-        self.df = None
-        self.processed_data = []
-        self.recipe_loader = None
-        
-    def load_excel(self):
-        """Загрузка Excel файла с использованием RecipeLoader"""
-        try:
-            # Используем новый RecipeLoader для загрузки
-            self.recipe_loader = RecipeLoader(self.excel_path)
-            self.df = self.recipe_loader.load_excel()
-            print(f"✅ Загружен файл: {os.path.basename(self.excel_path)}")
-            print(f"📊 Размер данных: {self.df.shape[0]} строк, {self.df.shape[1]} столбцов")
-            
-            # Парсим компоненты
-            components = self.recipe_loader.parse_components()
-            print(f"🔧 Распарсено {len(components)} рецептов с компонентами")
-            
-            return True
-        except Exception as e:
-            print(f"❌ Ошибка загрузки Excel: {e}")
-            return False
+def process_excel_file(excel_path: str, 
+                      output_dir: str = "data/processed",
+                      analyze_components: bool = True,
+                      generate_report: bool = True) -> Dict[str, Any]:
+    """
+    Обработка Excel файла с рецептами
     
-    def clean_column_names(self, df):
-        """Очистка названий столбцов"""
-        df.columns = [str(col).strip().replace('\n', ' ') for col in df.columns]
-        return df
+    Args:
+        excel_path: Путь к Excel файлу
+        output_dir: Директория для сохранения результатов
+        analyze_components: Анализировать ли компоненты
+        generate_report: Генерировать ли отчет
+        
+    Returns:
+        Словарь с результатами обработки
+    """
+    results = {
+        'excel_path': excel_path,
+        'output_dir': output_dir,
+        'timestamp': datetime.now().isoformat(),
+        'success': False,
+        'errors': []
+    }
     
-    def extract_recipes(self):
-        """Извлечение рецептов из Excel с использованием RecipeLoader"""
-        if self.recipe_loader is None or self.recipe_loader.components is None:
-            print("❌ Данные не загружены. Сначала вызовите load_excel()")
-            return []
+    try:
+        # Проверяем существование файла
+        if not Path(excel_path).exists():
+            raise FileNotFoundError(f"Excel файл не найден: {excel_path}")
         
-        recipes = []
-        components = self.recipe_loader.components
+        logger.info(f"Начинаю обработку Excel файла: {excel_path}")
         
-        for recipe_id, comp_dict in components.items():
-            # Находим строку в DataFrame
-            recipe_row = self.df[self.df['id'].astype(str) == str(recipe_id)]
-            
-            if recipe_row.empty:
-                print(f"⚠️  Не найдена строка для id: {recipe_id}")
-                continue
-            
-            recipe_row = recipe_row.iloc[0]
-            
-            recipe = {
-                'id': str(recipe_id),
-                'name': recipe_row.get('название', ''),
-                'type': recipe_row.get('тип', 'unknown'),
-                'components': comp_dict,
-                'total_weight': sum(comp_dict.values())
+        # Создаем анализатор компонентов
+        analyzer = ComponentAnalyzer(excel_path)
+        
+        # Загружаем и анализируем Excel
+        logger.info("Загрузка и анализ Excel файла...")
+        analyzer.load_excel()
+        
+        if analyze_components:
+            logger.info("Анализ компонентов...")
+            analysis_results = analyzer.analyze_components()
+            results['analysis'] = {
+                'total_recipes': len(analyzer.df),
+                'categories': analysis_results['category_stats'],
+                'unique_components': len(analyzer.get_component_features()['component_to_idx'])
             }
-            
-            recipes.append(recipe)
         
-        print(f"✅ Извлечено {len(recipes)} рецептов")
-        return recipes
-    
-    def analyze_recipes(self, recipes):
-        """Анализ рецептов"""
-        analysis = {
-            'total_recipes': len(recipes),
-            'types_count': {},
-            'component_stats': {}
-        }
+        # Создаем загрузчик рецептов
+        loader = RecipeLoader(excel_path, analyzer)
         
-        # Подсчет типов рецептов
-        types = [r['type'] for r in recipes]
-        type_counts = pd.Series(types).value_counts()
-        analysis['types_count'] = type_counts.to_dict()
+        # Получаем все рецепты
+        logger.info("Парсинг рецептов...")
+        recipes = loader.get_all_recipes()
         
-        # Анализ компонентов
-        all_components = set()
-        component_totals = {}
+        # Получаем статистику
+        stats = loader.get_component_statistics()
         
-        for recipe in recipes:
-            all_components.update(recipe['components'].keys())
-            for component, value in recipe['components'].items():
-                component_totals[component] = component_totals.get(component, 0) + value
+        # Сохраняем результаты в JSON
+        output_path = Path(output_dir) / "recipes_processed.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        analysis['unique_components'] = len(all_components)
-        analysis['component_totals'] = dict(sorted(
-            component_totals.items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )[:10])  # Только топ-10
-        
-        print(f"📊 Всего уникальных компонентов: {len(all_components)}")
-        print(f"📊 Типы рецептов: {analysis['types_count']}")
-        
-        return analysis
-    
-    def save_to_json(self, recipes, output_path):
-        """Сохранение в JSON с использованием RecipeLoader"""
-        try:
-            # Используем метод RecipeLoader для сохранения
-            self.recipe_loader.save_to_json(output_path)
-            print(f"💾 Данные сохранены: {output_path}")
-            
-            # Создаем summary
-            summary = {
+        # Подготовка данных для сохранения
+        output_data = {
+            'metadata': {
+                'source_file': excel_path,
+                'processing_date': datetime.now().isoformat(),
                 'total_recipes': len(recipes),
-                'components_count': len(recipes[0]['components']) if recipes else 0,
-                'file_size': os.path.getsize(output_path)
+                'categories': {cat: stats['categories'][cat] for cat in stats['categories']},
+                'component_groups': loader.component_groups
+            },
+            'recipes': []
+        }
+        
+        # Добавляем рецепты
+        for recipe in recipes:
+            recipe_data = {
+                'name': recipe.name,
+                'category': recipe.category,
+                'components': recipe.components,
+                'component_count': len(recipe.components),
+                'total_weight': sum(recipe.components.values())
+            }
+            output_data['recipes'].append(recipe_data)
+        
+        # Сохраняем JSON
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
+        
+        results['json_path'] = str(output_path)
+        results['total_recipes'] = len(recipes)
+        results['categories'] = stats['categories']
+        
+        # Генерация отчетов
+        if generate_report:
+            logger.info("Генерация отчетов...")
+            
+            # Текстовый отчет
+            report_path = Path("reports") / f"excel_processing_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("ОТЧЕТ ОБ ОБРАБОТКЕ EXCEL ФАЙЛА С РЕЦЕПТАМИ\n")
+                f.write("=" * 80 + "\n\n")
+                
+                f.write(f"Файл: {excel_path}\n")
+                f.write(f"Дата обработки: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Всего рецептов: {len(recipes)}\n\n")
+                
+                f.write("РАСПРЕДЕЛЕНИЕ ПО КАТЕГОРИЯМ:\n")
+                f.write("-" * 40 + "\n")
+                for category, count in stats['categories'].items():
+                    f.write(f"{category}: {count} рецептов ({count/len(recipes)*100:.1f}%)\n")
+                
+                f.write("\nСТАТИСТИКА КОМПОНЕНТОВ:\n")
+                f.write("-" * 40 + "\n")
+                
+                # Топ-10 наиболее часто используемых компонентов
+                component_freq = stats['component_frequency']
+                top_components = sorted(component_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+                
+                f.write("\nТоп-10 наиболее частых компонентов:\n")
+                for component, freq in top_components:
+                    percentage = (freq / len(recipes)) * 100
+                    f.write(f"  {component[:50]}: {freq} рецептов ({percentage:.1f}%)\n")
+                
+                f.write("\nГРУППЫ КОМПОНЕНТОВ:\n")
+                for group_name, components in loader.component_groups.items():
+                    group_usage = sum(1 for comp in components if comp in component_freq and component_freq[comp] > 0)
+                    if group_usage > 0:
+                        f.write(f"  {group_name}: {group_usage} компонентов\n")
+                
+                f.write("\nПРИМЕРЫ РЕЦЕПТОВ:\n")
+                f.write("-" * 40 + "\n")
+                for i, recipe in enumerate(recipes[:3]):  # Показываем первые 3 рецепта
+                    f.write(f"\n{i+1}. {recipe.name} ({recipe.category})\n")
+                    f.write("   Компоненты:\n")
+                    for component, value in list(recipe.components.items())[:5]:  # Первые 5 компонентов
+                        f.write(f"     - {component}: {value} кг\n")
+                    if len(recipe.components) > 5:
+                        f.write(f"     ... и еще {len(recipe.components) - 5} компонентов\n")
+            
+            results['report_path'] = str(report_path)
+            
+            # Визуализации
+            if analyze_components:
+                logger.info("Создание визуализаций...")
+                viz_path = analyzer.visualize_analysis()
+                results['visualization_path'] = str(viz_path)
+        
+        # Сохранение векторизованных данных для ML
+        ml_data_path = Path(output_dir) / "ml_ready_data.json"
+        ml_data = {
+            'component_mapping': loader.component_features,
+            'category_mapping': {cat: idx for idx, cat in enumerate(loader.categories)},
+            'recipes_vectorized': []
+        }
+        
+        for recipe in recipes:
+            recipe_vector = loader.vectorize_components(recipe.components)
+            ml_data['recipes_vectorized'].append({
+                'name': recipe.name,
+                'category': recipe.category,
+                'vector': recipe_vector.tolist(),
+                'components': recipe.components
+            })
+        
+        with open(ml_data_path, 'w', encoding='utf-8') as f:
+            json.dump(ml_data, f, ensure_ascii=False, indent=2)
+        
+        results['ml_data_path'] = str(ml_data_path)
+        results['success'] = True
+        
+        logger.info(f"Обработка завершена успешно!")
+        logger.info(f"  Обработано рецептов: {len(recipes)}")
+        logger.info(f"  Категории: {', '.join(stats['categories'].keys())}")
+        logger.info(f"  JSON сохранен: {output_path}")
+        
+        if 'report_path' in results:
+            logger.info(f"  Отчет сохранен: {results['report_path']}")
+        
+        # Вывод краткой статистики
+        print("\n" + "=" * 80)
+        print("КРАТКАЯ СТАТИСТИКА:")
+        print("=" * 80)
+        print(f"Всего рецептов: {len(recipes)}")
+        print("\nРаспределение по категориям:")
+        for category, count in stats['categories'].items():
+            percentage = (count / len(recipes)) * 100
+            print(f"  {category}: {count} ({percentage:.1f}%)")
+        
+        print("\nУникальных компонентов:", len(loader.component_features['component_to_idx']))
+        print(f"Данные для ML сохранены: {ml_data_path}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке Excel файла: {e}")
+        results['errors'].append(str(e))
+        results['success'] = False
+    
+    return results
+
+
+def compare_with_existing_data(new_data_path: str, 
+                              existing_data_path: str = "data/processed/recipes_processed.json") -> Dict[str, Any]:
+    """
+    Сравнение новых данных с существующими
+    
+    Args:
+        new_data_path: Путь к новым данным
+        existing_data_path: Путь к существующим данным
+        
+    Returns:
+        Словарь с результатами сравнения
+    """
+    comparison = {
+        'new_recipes': 0,
+        'updated_recipes': 0,
+        'removed_recipes': 0,
+        'changes': []
+    }
+    
+    try:
+        if not Path(existing_data_path).exists():
+            logger.info(f"Существующие данные не найдены: {existing_data_path}")
+            return comparison
+        
+        # Загружаем данные
+        with open(new_data_path, 'r', encoding='utf-8') as f:
+            new_data = json.load(f)
+        
+        with open(existing_data_path, 'r', encoding='utf-8') as f:
+            existing_data = json.load(f)
+        
+        # Создаем словари для сравнения
+        new_recipes = {r['name']: r for r in new_data.get('recipes', [])}
+        existing_recipes = {r['name']: r for r in existing_data.get('recipes', [])}
+        
+        # Находим новые рецепты
+        new_recipe_names = set(new_recipes.keys()) - set(existing_recipes.keys())
+        comparison['new_recipes'] = len(new_recipe_names)
+        
+        # Находим удаленные рецепты
+        removed_recipe_names = set(existing_recipes.keys()) - set(new_recipes.keys())
+        comparison['removed_recipes'] = len(removed_recipe_names)
+        
+        # Проверяем изменения в существующих рецептах
+        for name in set(new_recipes.keys()) & set(existing_recipes.keys()):
+            new_recipe = new_recipes[name]
+            existing_recipe = existing_recipes[name]
+            
+            # Проверяем изменения в компонентах
+            new_components = set(new_recipe.get('components', {}).items())
+            existing_components = set(existing_recipe.get('components', {}).items())
+            
+            if new_components != existing_components:
+                comparison['updated_recipes'] += 1
+                
+                changes = {
+                    'recipe': name,
+                    'category_changed': new_recipe.get('category') != existing_recipe.get('category'),
+                    'component_changes': {
+                        'added': dict(new_components - existing_components),
+                        'removed': dict(existing_components - new_components)
+                    }
+                }
+                comparison['changes'].append(changes)
+        
+        logger.info(f"Сравнение завершено:")
+        logger.info(f"  Новых рецептов: {comparison['new_recipes']}")
+        logger.info(f"  Обновленных рецептов: {comparison['updated_recipes']}")
+        logger.info(f"  Удаленных рецептов: {comparison['removed_recipes']}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при сравнении данных: {e}")
+    
+    return comparison
+
+
+def create_sample_dataset(output_path: str = "data/processed/sample_dataset.csv",
+                        num_samples: int = 100) -> str:
+    """
+    Создание выборки для тестирования
+    
+    Args:
+        output_path: Путь для сохранения выборки
+        num_samples: Количество образцов
+        
+    Returns:
+        Путь к созданному файлу
+    """
+    try:
+        # Загружаем обработанные данные
+        processed_path = Path("data/processed/recipes_processed.json")
+        if not processed_path.exists():
+            logger.warning("Обработанные данные не найдены. Сначала выполните process_excel_file()")
+            return ""
+        
+        with open(processed_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Создаем DataFrame
+        samples = []
+        for recipe in data['recipes'][:num_samples]:
+            sample = {
+                'recipe_name': recipe['name'],
+                'category': recipe['category'],
+                'component_count': recipe['component_count'],
+                'total_weight': recipe['total_weight']
             }
             
-            return summary
-        except Exception as e:
-            print(f"❌ Ошибка сохранения JSON: {e}")
-            return None
-    
-    def create_visualization(self, recipes, output_dir):
-        """Создание визуализаций"""
-        os.makedirs(output_dir, exist_ok=True)
+            # Добавляем топ-5 компонентов
+            components = sorted(recipe['components'].items(), key=lambda x: x[1], reverse=True)[:5]
+            for i, (component, value) in enumerate(components):
+                sample[f'component_{i+1}_name'] = component
+                sample[f'component_{i+1}_value'] = value
+            
+            samples.append(sample)
         
-        # 1. Распределение типов рецептов
-        types = [r['type'] for r in recipes]
-        type_counts = pd.Series(types).value_counts()
+        df = pd.DataFrame(samples)
+        df.to_csv(output_path, index=False, encoding='utf-8')
         
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        logger.info(f"Выборка создана: {output_path} ({len(df)} записей)")
+        return output_path
         
-        # Круговая диаграмма типов
-        axes[0].pie(type_counts.values, labels=type_counts.index, autopct='%1.1f%%')
-        axes[0].set_title('Распределение типов рецептов')
-        
-        # 2. Топ-10 компонентов
-        component_totals = {}
-        for recipe in recipes:
-            for component, value in recipe['components'].items():
-                if value > 0:
-                    component_totals[component] = component_totals.get(component, 0) + value
-        
-        # Сортируем по общему весу
-        top_components = sorted(component_totals.items(), key=lambda x: x[1], reverse=True)[:10]
-        components_names = [c[0][:20] + '...' if len(c[0]) > 20 else c[0] for c in top_components]
-        components_values = [c[1] for c in top_components]
-        
-        axes[1].barh(components_names, components_values)
-        axes[1].set_xlabel('Общий вес (кг)')
-        axes[1].set_title('Топ-10 компонентов по использованию')
-        axes[1].invert_yaxis()
-        
-        plt.tight_layout()
-        viz_path = os.path.join(output_dir, 'recipe_analysis.png')
-        plt.savefig(viz_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"📈 Визуализации сохранены: {viz_path}")
-        
-        return viz_path
-    
-    def process(self, output_dir='data/processed'):
-        """Основной процесс обработки"""
-        print("=" * 50)
-        print("🔄 НАЧАЛО ОБРАБОТКИ EXCEL ФАЙЛА")
-        print("=" * 50)
-        
-        # 1. Загрузка с использованием RecipeLoader
-        if not self.load_excel():
-            return None
-        
-        # 2. Извлечение рецептов
-        recipes = self.extract_recipes()
-        if not recipes:
-            return None
-        
-        # 3. Анализ
-        analysis = self.analyze_recipes(recipes)
-        
-        # 4. Сохранение с использованием RecipeLoader
-        json_path = os.path.join(output_dir, 'recipes.json')
-        summary = self.save_to_json(recipes, json_path)
-        
-        if not summary:
-            return None
-        
-        # 5. Визуализация
-        viz_path = self.create_visualization(recipes, output_dir)
-        
-        print("\n" + "=" * 50)
-        print("✅ ОБРАБОТКА ЗАВЕРШЕНА")
-        print("=" * 50)
-        print(f"📁 Рецептов обработано: {summary['total_recipes']}")
-        print(f"📁 Компонентов в каждом: {summary['components_count']}")
-        print(f"💾 Размер файла: {summary['file_size'] / 1024:.1f} KB")
-        print(f"📈 Визуализации: {viz_path}")
-        
-        return {
-            'recipes': recipes,
-            'json_path': json_path,
-            'viz_path': viz_path,
-            'analysis': analysis
-        }
+    except Exception as e:
+        logger.error(f"Ошибка при создании выборки: {e}")
+        return ""
 
 
 def main():
-    """Точка входа"""
-    import sys
+    """Основная функция скрипта"""
+    parser = argparse.ArgumentParser(description='Обработка Excel файла с рецептами терразитовой штукатурки')
+    parser.add_argument('--excel', type=str, default='data/raw/recipes.xlsx',
+                       help='Путь к Excel файлу с рецептами (по умолчанию: data/raw/recipes.xlsx)')
+    parser.add_argument('--output', type=str, default='data/processed',
+                       help='Директория для сохранения результатов (по умолчанию: data/processed)')
+    parser.add_argument('--no-analyze', action='store_true',
+                       help='Не анализировать компоненты')
+    parser.add_argument('--no-report', action='store_true',
+                       help='Не генерировать отчет')
+    parser.add_argument('--compare', action='store_true',
+                       help='Сравнить с существующими данными')
+    parser.add_argument('--sample', type=int, default=0,
+                       help='Создать выборку указанного размера')
+    parser.add_argument('--config', type=str, default=None,
+                       help='Путь к файлу конфигурации')
     
-    # Определяем путь к Excel файлу
-    if len(sys.argv) > 1:
-        excel_path = sys.argv[1]
-    else:
-        # Ищем Excel файл в data/raw/
-        raw_dir = Path('data/raw')
-        excel_files = list(raw_dir.glob('*.xlsx')) + list(raw_dir.glob('*.xls'))
+    args = parser.parse_args()
+    
+    # Настройка конфигурации
+    if args.config:
+        setup_config(args.config)
+    
+    # Обработка Excel файла
+    results = process_excel_file(
+        excel_path=args.excel,
+        output_dir=args.output,
+        analyze_components=not args.no_analyze,
+        generate_report=not args.no_report
+    )
+    
+    if not results['success']:
+        logger.error("Обработка завершилась с ошибками:")
+        for error in results.get('errors', []):
+            logger.error(f"  - {error}")
+        sys.exit(1)
+    
+    # Сравнение с существующими данными
+    if args.compare and 'json_path' in results:
+        comparison = compare_with_existing_data(results['json_path'])
         
-        if not excel_files:
-            print("❌ Не найден Excel файл в data/raw/")
-            print("📂 Поместите файл с рецептами в папку data/raw/")
-            print("📂 Или укажите путь к файлу как аргумент командной строки")
-            return
-        
-        excel_path = excel_files[0]
+        if comparison['new_recipes'] > 0 or comparison['updated_recipes'] > 0:
+            logger.info("Обнаружены изменения в данных:")
+            logger.info(f"  Новых рецептов: {comparison['new_recipes']}")
+            logger.info(f"  Обновленных рецептов: {comparison['updated_recipes']}")
+            
+            # Сохраняем отчет об изменениях
+            changes_path = Path(args.output) / f"changes_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(changes_path, 'w', encoding='utf-8') as f:
+                json.dump(comparison, f, ensure_ascii=False, indent=2)
+            logger.info(f"Отчет об изменениях сохранен: {changes_path}")
     
-    print(f"📄 Используется файл: {excel_path}")
+    # Создание выборки
+    if args.sample > 0:
+        sample_path = Path(args.output) / f"sample_dataset_{args.sample}.csv"
+        create_sample_dataset(str(sample_path), args.sample)
     
-    # Создаем процессор и обрабатываем
-    processor = ExcelProcessor(excel_path)
-    result = processor.process()
+    # Обновление конфигурации на основе анализа
+    try:
+        from src.utils.config import config
+        config.update_from_excel(args.excel)
+        logger.info("Конфигурация обновлена на основе анализа Excel файла")
+    except Exception as e:
+        logger.warning(f"Не удалось обновить конфигурацию: {e}")
     
-    if result:
-        print("\n🎉 Файл успешно обработан!")
-        print(f"📄 JSON файл: {result['json_path']}")
-        print(f"📊 Графики: {result['viz_path']}")
-        
-        # Сохраняем также через RecipeLoader для ML пайплайна
-        try:
-            # Создаем новый RecipeLoader для полного пайплайна
-            recipe_loader = RecipeLoader(excel_path)
-            recipe_loader.process_pipeline(output_path=result['json_path'])
-            print("🔧 Рецепты также сохранены через RecipeLoader для ML пайплайна")
-        except Exception as e:
-            print(f"⚠️  Дополнительное сохранение не удалось: {e}")
+    print("\n" + "=" * 80)
+    print("ОБРАБОТКА ЗАВЕРШЕНА УСПЕШНО!")
+    print("=" * 80)
+    print(f"Исходный файл: {results['excel_path']}")
+    print(f"Обработано рецептов: {results['total_recipes']}")
+    print(f"Категории: {', '.join(results['categories'].keys())}")
+    
+    if 'json_path' in results:
+        print(f"Данные сохранены: {results['json_path']}")
+    
+    if 'ml_data_path' in results:
+        print(f"Данные для ML: {results['ml_data_path']}")
+    
+    if 'report_path' in results:
+        print(f"Отчет: {results['report_path']}")
+    
+    print("\nСледующие шаги:")
+    print("1. Соберите фотографии образцов для каждого рецепта")
+    print("2. Разместите их в data/raw/images/{recipe_name}/")
+    print("3. Запустите обучение модели: python scripts/train_model.py")
+    print("4. Запустите API сервер: uvicorn src.api.main:app --reload")
+    print("5. Откройте интерфейс: streamlit run streamlit_app.py")
 
 
 if __name__ == "__main__":
