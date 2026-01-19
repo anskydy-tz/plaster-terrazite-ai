@@ -331,3 +331,357 @@ if __name__ == "__main__":
     print(f"\nРазделение данных:")
     print(f"Обучающая выборка: {X_train.shape[0]} образцов")
     print(f"Тестовая выборка: {X_test.shape[0]} образцов")
+    """
+"""
+Модификация DataLoader для поддержки загрузки данных через манифесты
+Добавляем в конец файла src/data/loader.py
+"""
+
+class ManifestDataLoader(DataLoader):
+    """Загрузчик данных для работы с манифестами изображений и рецептов"""
+    
+    def __init__(self, manifest_dir: str = "data/processed"):
+        """
+        Инициализация загрузчика манифестов
+        
+        Args:
+            manifest_dir: Директория с CSV манифестами
+        """
+        self.manifest_dir = Path(manifest_dir)
+        self.manifests = {}
+        self.image_cache = {}
+        
+    def load_manifest(self, manifest_name: str = "train") -> pd.DataFrame:
+        """
+        Загрузка манифеста по имени
+        
+        Args:
+            manifest_name: Имя манифеста (train, val, test, full)
+            
+        Returns:
+            DataFrame с данными манифеста
+        """
+        manifest_path = self.manifest_dir / f"data_manifest_{manifest_name}.csv"
+        
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Манифест не найден: {manifest_path}")
+        
+        df = pd.read_csv(manifest_path, encoding='utf-8')
+        logger.info(f"Загружен манифест '{manifest_name}': {len(df)} записей")
+        
+        self.manifests[manifest_name] = df
+        return df
+    
+    def load_recipes_dict(self, recipes_json_path: str = "data/processed/recipes.json") -> Dict:
+        """
+        Загрузка рецептов в словарь для быстрого доступа
+        
+        Args:
+            recipes_json_path: Путь к JSON файлу с рецептами
+            
+        Returns:
+            Словарь рецептов по ID
+        """
+        recipes = self.load_recipe_json(recipes_json_path)
+        recipes_dict = {}
+        
+        for recipe in recipes:
+            recipe_id = recipe['id']
+            recipes_dict[recipe_id] = {
+                'id': recipe_id,
+                'name': recipe.get('name', ''),
+                'type': recipe.get('type', 'unknown'),
+                'components': recipe.get('components', {}),
+                'total_weight': recipe.get('total_weight', 0)
+            }
+        
+        logger.info(f"Загружено {len(recipes_dict)} рецептов в словарь")
+        return recipes_dict
+    
+    def prepare_image_data(self, manifest_df: pd.DataFrame, 
+                          recipes_dict: Dict,
+                          target_size: Tuple[int, int] = (224, 224),
+                          use_test_images: bool = True) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        """
+        Подготовка изображений и меток для обучения
+        
+        Args:
+            manifest_df: DataFrame манифеста
+            recipes_dict: Словарь рецептов
+            target_size: Размер изображений
+            use_test_images: Использовать тестовые изображения (для .txt файлов)
+            
+        Returns:
+            Кортеж (изображения, метки)
+        """
+        images = []
+        labels = []
+        failed_images = []
+        
+        # Получаем все уникальные компоненты для создания единого вектора признаков
+        all_components = set()
+        for recipe in recipes_dict.values():
+            all_components.update(recipe['components'].keys())
+        component_list = sorted(list(all_components))
+        
+        logger.info(f"Всего уникальных компонентов: {len(component_list)}")
+        
+        for idx, row in manifest_df.iterrows():
+            try:
+                image_path = Path(row['image_path'])
+                recipe_id = str(row['recipe_id'])
+                
+                # Полный путь к изображению (относительно корня проекта)
+                full_image_path = Path("data/raw") / image_path
+                
+                # Загрузка изображения
+                if use_test_images and full_image_path.suffix == '.txt':
+                    # Для тестовых .txt файлов создаем случайное изображение
+                    img_array = self._create_test_image(
+                        recipe_id=recipe_id,
+                        recipe_type=row.get('recipe_type', 'unknown'),
+                        target_size=target_size
+                    )
+                else:
+                    # Для реальных изображений используем стандартный загрузчик
+                    img_array = self.load_image(str(full_image_path), target_size)
+                
+                # Получение рецепта и преобразование в вектор
+                recipe = recipes_dict.get(recipe_id)
+                if recipe is None:
+                    logger.warning(f"Рецепт с ID {recipe_id} не найден, пропускаем")
+                    continue
+                
+                # Преобразование компонентов в вектор
+                component_vector = self._components_to_vector(
+                    recipe['components'], 
+                    component_list
+                )
+                
+                images.append(img_array)
+                labels.append(component_vector)
+                
+            except Exception as e:
+                failed_images.append(str(image_path))
+                logger.error(f"Ошибка обработки изображения {row['image_path']}: {e}")
+                continue
+        
+        if failed_images:
+            logger.warning(f"Не удалось обработать {len(failed_images)} изображений")
+        
+        logger.info(f"Успешно обработано {len(images)} изображений")
+        return np.array(images), np.array(labels)
+    
+    def _create_test_image(self, recipe_id: str, recipe_type: str, 
+                          target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
+        """
+        Создание тестового изображения на основе ID и типа рецепта
+        
+        Args:
+            recipe_id: ID рецепта
+            recipe_type: Тип рецепта
+            target_size: Размер изображения
+            
+        Returns:
+            Тестовое изображение как numpy array
+        """
+        # Создаем детерминированное "изображение" на основе ID рецепта
+        seed = int(recipe_id) if recipe_id.isdigit() else hash(recipe_id) % 1000
+        np.random.seed(seed)
+        
+        height, width = target_size
+        channels = 3
+        
+        # Разные типы рецептов создают разные паттерны
+        if recipe_type == 'внутренняя':
+            # Более светлые тона для внутренней штукатурки
+            base_color = np.array([0.8, 0.8, 0.9])  # Светло-голубой
+            noise = np.random.randn(height, width, channels) * 0.1
+        elif recipe_type == 'фасадная':
+            # Серые тона для фасадной
+            base_color = np.array([0.6, 0.6, 0.6])  # Серый
+            noise = np.random.randn(height, width, channels) * 0.15
+        elif recipe_type == 'декоративная':
+            # Более яркие тона для декоративной
+            base_color = np.array([0.9, 0.8, 0.7])  # Бежевый
+            noise = np.random.randn(height, width, channels) * 0.2
+        else:
+            base_color = np.array([0.5, 0.5, 0.5])  # Нейтральный серый
+            noise = np.random.randn(height, width, channels) * 0.1
+        
+        # Создаем базовое изображение
+        image = np.ones((height, width, channels)) * base_color
+        
+        # Добавляем шум для имитации текстуры
+        image = image + noise
+        
+        # Обрезаем значения до [0, 1]
+        image = np.clip(image, 0, 1)
+        
+        return image.astype(np.float32)
+    
+    def _components_to_vector(self, components: Dict, component_list: List) -> np.ndarray:
+        """
+        Преобразование словаря компонентов в вектор
+        
+        Args:
+            components: Словарь компонентов
+            component_list: Список всех компонентов
+            
+        Returns:
+            Вектор значений компонентов
+        """
+        vector = np.zeros(len(component_list), dtype=np.float32)
+        
+        for i, component in enumerate(component_list):
+            if component in components:
+                # Нормализуем значения (предполагаем, что сумма ≈ 100)
+                vector[i] = components[component] / 100.0
+        
+        return vector
+    
+    def get_dataset_info(self, manifest_name: str = "train") -> Dict:
+        """
+        Получение информации о датасете
+        
+        Args:
+            manifest_name: Имя манифеста
+            
+        Returns:
+            Словарь с информацией
+        """
+        if manifest_name not in self.manifests:
+            self.load_manifest(manifest_name)
+        
+        df = self.manifests[manifest_name]
+        
+        info = {
+            'total_samples': len(df),
+            'unique_recipes': df['recipe_id'].nunique(),
+            'recipe_types': df['recipe_type'].value_counts().to_dict(),
+            'file_extensions': df['image_path'].apply(
+                lambda x: Path(x).suffix
+            ).value_counts().to_dict(),
+            'split': manifest_name
+        }
+        
+        return info
+    
+    def prepare_training_data(self, 
+                            train_manifest: str = "train",
+                            val_manifest: str = "val",
+                            test_manifest: str = "test",
+                            recipes_json: str = "data/processed/recipes.json",
+                            target_size: Tuple[int, int] = (224, 224)) -> Dict:
+        """
+        Подготовка всех данных для обучения
+        
+        Args:
+            train_manifest: Имя манифеста для обучения
+            val_manifest: Имя манифеста для валидации
+            test_manifest: Имя манифеста для тестирования
+            recipes_json: Путь к JSON с рецептами
+            target_size: Размер изображений
+            
+        Returns:
+            Словарь с подготовленными данными
+        """
+        logger.info("="*60)
+        logger.info("ПОДГОТОВКА ДАННЫХ ДЛЯ ОБУЧЕНИЯ МОДЕЛИ")
+        logger.info("="*60)
+        
+        # Загрузка рецептов
+        recipes_dict = self.load_recipes_dict(recipes_json)
+        
+        # Загрузка и подготовка данных для каждой выборки
+        datasets = {}
+        
+        for split_name in [train_manifest, val_manifest, test_manifest]:
+            logger.info(f"\nПодготовка данных для '{split_name}':")
+            
+            # Загрузка манифеста
+            manifest_df = self.load_manifest(split_name)
+            
+            # Подготовка изображений и меток
+            images, labels = self.prepare_image_data(
+                manifest_df=manifest_df,
+                recipes_dict=recipes_dict,
+                target_size=target_size,
+                use_test_images=True  # Используем тестовые изображения для .txt файлов
+            )
+            
+            datasets[split_name] = {
+                'images': images,
+                'labels': labels,
+                'manifest': manifest_df,
+                'info': self.get_dataset_info(split_name)
+            }
+            
+            logger.info(f"  Изображений: {len(images)}")
+            logger.info(f"  Меток: {len(labels)}")
+            logger.info(f"  Размер изображений: {images.shape if len(images) > 0 else 'N/A'}")
+        
+        logger.info("\n" + "="*60)
+        logger.info("ПОДГОТОВКА ДАННЫХ ЗАВЕРШЕНА")
+        logger.info("="*60)
+        
+        # Вывод общей статистики
+        total_images = sum(len(datasets[split]['images']) for split in datasets)
+        logger.info(f"Всего изображений: {total_images}")
+        
+        for split_name, data in datasets.items():
+            info = data['info']
+            logger.info(f"\n{split_name.upper()}:")
+            logger.info(f"  Образцов: {info['total_samples']}")
+            logger.info(f"  Уникальных рецептов: {info['unique_recipes']}")
+            logger.info(f"  Распределение типов: {info['recipe_types']}")
+        
+        return datasets
+
+
+# Функция для быстрой проверки
+def test_manifest_loader():
+    """Тестирование ManifestDataLoader"""
+    print("Тестирование ManifestDataLoader...")
+    
+    try:
+        loader = ManifestDataLoader()
+        
+        # Проверка загрузки манифеста
+        train_df = loader.load_manifest("train")
+        print(f"✓ Загружен манифест train: {len(train_df)} записей")
+        
+        # Проверка загрузки рецептов
+        recipes_dict = loader.load_recipes_dict()
+        print(f"✓ Загружено рецептов: {len(recipes_dict)}")
+        
+        # Проверка подготовки данных
+        datasets = loader.prepare_training_data(
+            train_manifest="train",
+            val_manifest="val",
+            test_manifest="test",
+            target_size=(224, 224)
+        )
+        
+        print("✓ Данные успешно подготовлены:")
+        for split_name, data in datasets.items():
+            print(f"  {split_name}: {len(data['images'])} изображений")
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ Ошибка: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+if __name__ == "__main__":
+    # Запуск теста при прямом выполнении файла
+    success = test_manifest_loader()
+    if success:
+        print("\n✅ ManifestDataLoader работает корректно!")
+        print("\nСледующий шаг:")
+        print("Обновите scripts/train_model.py для использования ManifestDataLoader")
+    else:
+        print("\n❌ Обнаружены проблемы в ManifestDataLoader")
