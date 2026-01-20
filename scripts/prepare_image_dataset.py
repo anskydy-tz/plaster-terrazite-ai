@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Скрипт для подготовки датасета изображений для обучения модели.
-Создает связи между изображениями и рецептами из базы данных.
+Скрипт для подготовки датасета изображений.
+Работает с манифестом от create_data_manifest.py.
 """
 import sys
 from pathlib import Path
 
-# Добавляем путь к src для импорта модулей
 sys.path.append(str(Path(__file__).parent.parent))
 
 import json
@@ -15,7 +14,6 @@ import numpy as np
 from PIL import Image
 import cv2
 from pathlib import Path
-from typing import List, Dict, Any, Optional
 import argparse
 from datetime import datetime
 import pandas as pd
@@ -28,35 +26,66 @@ logger = setup_logger(__name__)
 
 class ImageDatasetPreparer:
     """
-    Класс для подготовки датасета изображений.
+    Класс для подготовки датасета изображений на основе существующего манифеста.
     """
     
-    def __init__(self, images_dir: str = None, recipes_json: str = None):
+    def __init__(self, manifest_path: str = None):
         """
         Инициализация подготовщика данных.
         
         Args:
-            images_dir: Директория с изображениями
-            recipes_json: Путь к JSON с рецептами
+            manifest_path: Путь к CSV манифесту от create_data_manifest.py
         """
-        if images_dir is None:
-            images_dir = config.data.images_dir
-        if recipes_json is None:
-            recipes_json = Path(config.project_root) / config.data.processed_data_dir / config.data.processed_json
+        if manifest_path is None:
+            # Ищем манифест в стандартных местах
+            possible_paths = [
+                "data/processed/data_manifest_full.csv",
+                "data/processed/data_manifest_train.csv",
+                "data/raw/data_manifest.csv"
+            ]
+            
+            for path in possible_paths:
+                if Path(path).exists():
+                    manifest_path = path
+                    break
         
-        self.images_dir = Path(images_dir)
-        self.recipes_json = Path(recipes_json)
+        if not manifest_path or not Path(manifest_path).exists():
+            raise FileNotFoundError(f"Манифест не найден. Сначала запустите create_data_manifest.py")
+        
+        self.manifest_path = Path(manifest_path)
+        self.manifest_df = None
         self.dataset_info = {}
+        
+        # Загружаем манифест
+        self._load_manifest()
         
         # Создаем структуру директорий
         self._create_directory_structure()
     
+    def _load_manifest(self):
+        """Загрузка манифеста."""
+        try:
+            self.manifest_df = pd.read_csv(self.manifest_path)
+            logger.info(f"Манифест загружен: {self.manifest_path}")
+            logger.info(f"Записей: {len(self.manifest_df)}")
+            logger.info(f"Колонки: {list(self.manifest_df.columns)}")
+            
+            # Проверяем наличие необходимых колонок
+            required_columns = ['image_path', 'recipe_id', 'split']
+            missing_columns = [col for col in required_columns if col not in self.manifest_df.columns]
+            
+            if missing_columns:
+                logger.warning(f"Отсутствуют колонки: {missing_columns}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка загрузки манифеста: {e}")
+            raise
+    
     def _create_directory_structure(self):
         """Создание структуры директорий для датасета."""
         directories = [
-            "data/raw/images",
             "data/processed/images/train",
-            "data/processed/images/val",
+            "data/processed/images/val", 
             "data/processed/images/test",
             "data/processed/images/augmented",
             "data/processed/metadata"
@@ -65,222 +94,116 @@ class ImageDatasetPreparer:
         for directory in directories:
             Path(directory).mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Структура директорий создана")
+        logger.info("Структура директорий создана")
     
-    def scan_existing_images(self) -> Dict[str, List[str]]:
+    def copy_images_to_dataset_structure(self):
         """
-        Сканирование существующих изображений.
-        
-        Returns:
-            Словарь: имя_рецепта -> список путей к изображениям
+        Копирование изображений в структурированную директорию датасета
+        на основе манифеста.
         """
-        images_by_recipe = {}
-        
-        if not self.images_dir.exists():
-            logger.warning(f"Директория с изображениями не найдена: {self.images_dir}")
-            return images_by_recipe
-        
-        # Поддерживаемые форматы
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
-        
-        # Рекурсивно ищем все изображения
-        for ext in image_extensions:
-            for image_path in self.images_dir.rglob(f"*{ext}"):
-                # Пытаемся определить рецепт из имени файла или директории
-                recipe_name = self._extract_recipe_name(image_path)
-                if recipe_name:
-                    if recipe_name not in images_by_recipe:
-                        images_by_recipe[recipe_name] = []
-                    images_by_recipe[recipe_name].append(str(image_path))
-        
-        logger.info(f"Найдено изображений: {sum(len(imgs) for imgs in images_by_recipe.values())}")
-        logger.info(f"Уникальных рецептов с изображениями: {len(images_by_recipe)}")
-        
-        return images_by_recipe
-    
-    def _extract_recipe_name(self, image_path: Path) -> Optional[str]:
-        """
-        Извлечение имени рецепта из пути к изображению.
-        
-        Args:
-            image_path: Путь к изображению
-            
-        Returns:
-            Имя рецепта или None
-        """
-        # Пробуем несколько стратегий:
-        
-        # 1. Из имени файла (удаляем расширение и номера)
-        filename = image_path.stem
-        
-        # Убираем цифры и специальные символы в конце
-        import re
-        cleaned_name = re.sub(r'[\d_\-]*$', '', filename)
-        cleaned_name = cleaned_name.strip('_').strip('-')
-        
-        # 2. Из имени родительской директории
-        parent_name = image_path.parent.name
-        
-        # 3. Ищем в базе рецептов наиболее похожее имя
-        if not hasattr(self, '_recipe_names'):
-            self._load_recipe_names()
-        
-        # Ищем совпадения
-        possible_names = [cleaned_name, parent_name]
-        
-        for name in possible_names:
-            if name in self._recipe_names:
-                return name
-        
-        # Если точного совпадения нет, ищем частичное
-        for recipe_name in self._recipe_names:
-            if recipe_name.lower() in cleaned_name.lower() or cleaned_name.lower() in recipe_name.lower():
-                return recipe_name
-        
-        return None
-    
-    def _load_recipe_names(self):
-        """Загрузка имен рецептов из JSON."""
-        if not self.recipes_json.exists():
-            self._recipe_names = []
-            return
-        
-        with open(self.recipes_json, 'r', encoding='utf-8') as f:
-            recipes_data = json.load(f)
-        
-        self._recipe_names = [recipe['name'] for recipe in recipes_data.get('recipes', [])]
-        logger.info(f"Загружено имен рецептов: {len(self._recipe_names)}")
-    
-    def create_dataset_manifest(self, images_by_recipe: Dict[str, List[str]]) -> pd.DataFrame:
-        """
-        Создание манифеста датасета.
-        
-        Args:
-            images_by_recipe: Словарь рецепт -> список изображений
-            
-        Returns:
-            DataFrame с информацией о датасете
-        """
-        rows = []
-        
-        # Загружаем информацию о рецептах
-        if not self.recipes_json.exists():
-            logger.error(f"Файл с рецептами не найден: {self.recipes_json}")
-            return pd.DataFrame()
-        
-        with open(self.recipes_json, 'r', encoding='utf-8') as f:
-            recipes_data = json.load(f)
-        
-        # Создаем словарь рецептов для быстрого поиска
-        recipes_dict = {recipe['name']: recipe for recipe in recipes_data['recipes']}
-        
-        # Создаем записи для каждого изображения
-        for recipe_name, image_paths in images_by_recipe.items():
-            if recipe_name not in recipes_dict:
-                logger.warning(f"Рецепт '{recipe_name}' не найден в базе данных")
-                continue
-            
-            recipe_info = recipes_dict[recipe_name]
-            
-            for i, image_path in enumerate(image_paths):
-                row = {
-                    'image_id': f"{recipe_name}_{i:03d}",
-                    'image_path': str(image_path),
-                    'recipe_name': recipe_name,
-                    'recipe_category': recipe_info['category'],
-                    'component_count': recipe_info['component_count'],
-                    'total_weight': recipe_info['total_weight'],
-                    'split': self._assign_split(recipe_name, i, len(image_paths))
-                }
-                rows.append(row)
-        
-        df = pd.DataFrame(rows)
-        
-        # Сохраняем манифест
-        manifest_path = Path("data/processed/metadata/dataset_manifest.csv")
-        df.to_csv(manifest_path, index=False, encoding='utf-8')
-        
-        logger.info(f"Манифест создан: {manifest_path}")
-        logger.info(f"Записей в манифесте: {len(df)}")
-        logger.info(f"Распределение по сплитам: {dict(df['split'].value_counts())}")
-        
-        return df
-    
-    def _assign_split(self, recipe_name: str, image_index: int, total_images: int) -> str:
-        """
-        Назначение сплита для изображения.
-        
-        Args:
-            recipe_name: Имя рецепта
-            image_index: Индекс изображения
-            total_images: Общее количество изображений для рецепта
-            
-        Returns:
-            'train', 'val' или 'test'
-        """
-        # Простая стратегия: 70% train, 15% val, 15% test
-        # Используем хеш имени рецепта для детерминированности
-        import hashlib
-        recipe_hash = int(hashlib.md5(recipe_name.encode()).hexdigest()[:8], 16)
-        
-        # Первое изображение всегда в train для гарантии
-        if image_index == 0:
-            return 'train'
-        
-        # Распределяем остальные
-        split_value = (recipe_hash + image_index) % 100
-        
-        if split_value < 70:
-            return 'train'
-        elif split_value < 85:
-            return 'val'
-        else:
-            return 'test'
-    
-    def copy_images_to_dataset_structure(self, manifest_df: pd.DataFrame):
-        """
-        Копирование изображений в структурированную директорию датасета.
-        
-        Args:
-            manifest_df: DataFrame с манифестом
-        """
-        if manifest_df.empty:
+        if self.manifest_df.empty:
             logger.warning("Манифест пуст. Изображения не скопированы.")
             return
         
-        for _, row in manifest_df.iterrows():
-            src_path = Path(row['image_path'])
-            split = row['split']
-            recipe_name = row['recipe_name']
-            image_id = row['image_id']
+        copied_count = 0
+        missing_count = 0
+        
+        for _, row in self.manifest_df.iterrows():
+            # Определяем исходный путь
+            src_path = self._resolve_image_path(row)
+            
+            if not src_path or not src_path.exists():
+                logger.debug(f"Изображение не найдено: {row.get('image_path', 'unknown')}")
+                missing_count += 1
+                continue
+            
+            # Определяем сплит (если есть в манифесте)
+            split = row.get('split', 'train')
             
             # Создаем целевой путь
-            dst_dir = Path(f"data/processed/images/{split}/{recipe_name}")
+            recipe_id = str(row.get('recipe_id', 'unknown'))
+            image_filename = src_path.name
+            
+            # Если файл .txt, заменяем на .jpg для совместимости
+            if image_filename.endswith('.txt'):
+                image_filename = image_filename.replace('.txt', '.jpg')
+            
+            dst_dir = Path(f"data/processed/images/{split}/{recipe_id}")
             dst_dir.mkdir(parents=True, exist_ok=True)
             
-            dst_path = dst_dir / f"{image_id}{src_path.suffix}"
+            dst_path = dst_dir / image_filename
             
             try:
                 # Копируем изображение
-                shutil.copy2(src_path, dst_path)
-                
-                # Создаем уменьшенную версию для предпросмотра
-                self._create_preview_image(src_path, dst_dir / f"{image_id}_preview.jpg")
-                
+                if src_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp']:
+                    shutil.copy2(src_path, dst_path)
+                    copied_count += 1
+                    
+                    # Создаем уменьшенную версию для предпросмотра
+                    self._create_preview_image(src_path, dst_dir / f"preview_{image_filename}")
+                else:
+                    logger.warning(f"Неподдерживаемый формат: {src_path.suffix}")
+                    
             except Exception as e:
                 logger.error(f"Ошибка копирования {src_path}: {e}")
         
-        logger.info(f"Изображения скопированы в структурированную директорию")
+        logger.info(f"Изображения скопированы: {copied_count}")
+        logger.info(f"Изображений не найдено: {missing_count}")
+        
+        return copied_count
     
-    def _create_preview_image(self, src_path: Path, dst_path: Path, size=(256, 256)):
+    def _resolve_image_path(self, row: pd.Series) -> Optional[Path]:
         """
-        Создание уменьшенной версии изображения для предпросмотра.
+        Определение пути к изображению на основе данных из манифеста.
         
         Args:
-            src_path: Путь к исходному изображению
-            dst_path: Путь для сохранения превью
-            size: Размер превью
+            row: Строка манифеста
+            
+        Returns:
+            Путь к изображению или None
         """
+        # Пробуем несколько возможных мест
+        image_path = row.get('image_path', '')
+        
+        if pd.isna(image_path) or not image_path:
+            return None
+        
+        # Если путь абсолютный
+        if Path(image_path).is_absolute():
+            return Path(image_path)
+        
+        # Пробуем относительно разных корневых директорий
+        possible_roots = [
+            Path("data/raw"),
+            Path("."),
+            Path("..")
+        ]
+        
+        for root in possible_roots:
+            full_path = root / image_path
+            if full_path.exists():
+                return full_path
+        
+        # Если не нашли, пробуем поискать по recipe_id
+        recipe_id = str(row.get('recipe_id', ''))
+        if recipe_id:
+            recipe_dirs = [
+                Path("data/raw/images") / recipe_id,
+                Path("data/raw") / recipe_id,
+                Path("images") / recipe_id
+            ]
+            
+            for recipe_dir in recipe_dirs:
+                if recipe_dir.exists():
+                    # Ищем любой файл изображения в директории
+                    for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.txt']:
+                        for img_file in recipe_dir.glob(f"*{ext}"):
+                            return img_file
+        
+        return None
+    
+    def _create_preview_image(self, src_path: Path, dst_path: Path, size=(256, 256)):
+        """Создание уменьшенной версии изображения для предпросмотра."""
         try:
             img = Image.open(src_path)
             img.thumbnail(size, Image.Resampling.LANCZOS)
@@ -288,49 +211,56 @@ class ImageDatasetPreparer:
         except Exception as e:
             logger.warning(f"Не удалось создать превью для {src_path}: {e}")
     
-    def augment_images(self, manifest_df: pd.DataFrame):
+    def augment_images(self, augment_train_only: bool = True):
         """
         Аугментация изображений для увеличения датасета.
         
         Args:
-            manifest_df: DataFrame с манифестом
+            augment_train_only: Аугментировать только тренировочные данные
         """
         if not config.data.augmentation_enabled:
             logger.info("Аугментация отключена в конфигурации")
-            return
+            return self.manifest_df
         
         logger.info("Начало аугментации изображений...")
         
-        # Фильтруем только train изображения
-        train_df = manifest_df[manifest_df['split'] == 'train']
+        # Фильтруем изображения для аугментации
+        if augment_train_only:
+            images_to_augment = self.manifest_df[self.manifest_df['split'] == 'train']
+        else:
+            images_to_augment = self.manifest_df
         
         augmented_rows = []
         augmented_count = 0
         
-        for _, row in train_df.iterrows():
-            src_path = Path(row['image_path'])
+        for _, row in images_to_augment.iterrows():
+            src_path = self._resolve_image_path(row)
             
-            if not src_path.exists():
+            if not src_path or not src_path.exists():
                 continue
             
-            # Создаем 3 аугментированные версии
-            for aug_idx in range(3):
+            # Создаем 2 аугментированные версии
+            for aug_idx in range(2):
                 aug_image = self._apply_augmentation(src_path, aug_idx)
                 if aug_image is not None:
                     # Сохраняем аугментированное изображение
-                    aug_dir = Path("data/processed/images/augmented") / row['recipe_name']
+                    split = row.get('split', 'train')
+                    recipe_id = str(row.get('recipe_id', 'unknown'))
+                    
+                    aug_dir = Path(f"data/processed/images/augmented/{split}/{recipe_id}")
                     aug_dir.mkdir(parents=True, exist_ok=True)
                     
-                    aug_filename = f"{row['image_id']}_aug{aug_idx}{src_path.suffix}"
+                    original_name = src_path.stem
+                    aug_filename = f"{original_name}_aug{aug_idx}{src_path.suffix}"
                     aug_path = aug_dir / aug_filename
                     
                     aug_image.save(aug_path)
                     
                     # Добавляем запись в манифест
                     aug_row = row.copy()
-                    aug_row['image_path'] = str(aug_path)
-                    aug_row['image_id'] = f"{row['image_id']}_aug{aug_idx}"
-                    aug_row['split'] = 'train'  # Аугментированные тоже в train
+                    aug_row['image_path'] = str(aug_path.relative_to(Path("data/processed")))
+                    aug_row['is_augmented'] = True
+                    aug_row['augmentation_type'] = f'aug{aug_idx}'
                     
                     augmented_rows.append(aug_row)
                     augmented_count += 1
@@ -338,7 +268,7 @@ class ImageDatasetPreparer:
         # Добавляем аугментированные строки в манифест
         if augmented_rows:
             aug_df = pd.DataFrame(augmented_rows)
-            updated_manifest = pd.concat([manifest_df, aug_df], ignore_index=True)
+            updated_manifest = pd.concat([self.manifest_df, aug_df], ignore_index=True)
             
             # Сохраняем обновленный манифест
             manifest_path = Path("data/processed/metadata/dataset_manifest_augmented.csv")
@@ -347,9 +277,10 @@ class ImageDatasetPreparer:
             logger.info(f"Аугментация завершена. Добавлено {augmented_count} изображений")
             logger.info(f"Обновленный манифест: {manifest_path}")
             
+            self.manifest_df = updated_manifest
             return updated_manifest
         
-        return manifest_df
+        return self.manifest_df
     
     def _apply_augmentation(self, image_path: Path, aug_idx: int) -> Optional[Image.Image]:
         """
@@ -368,9 +299,9 @@ class ImageDatasetPreparer:
             # Преобразуем в numpy для OpenCV
             img_np = np.array(img)
             
-            # Применяем разные аугментации в зависимости от индекса
+            # Применяем разные аугментации
             if aug_idx == 0:
-                # Поворот
+                # Поворот и сдвиг
                 angle = np.random.uniform(-config.data.rotation_range, config.data.rotation_range)
                 h, w = img_np.shape[:2]
                 center = (w // 2, h // 2)
@@ -378,13 +309,6 @@ class ImageDatasetPreparer:
                 augmented = cv2.warpAffine(img_np, matrix, (w, h))
                 
             elif aug_idx == 1:
-                # Сдвиг
-                tx = np.random.uniform(-config.data.width_shift_range, config.data.width_shift_range) * img_np.shape[1]
-                ty = np.random.uniform(-config.data.height_shift_range, config.data.height_shift_range) * img_np.shape[0]
-                matrix = np.float32([[1, 0, tx], [0, 1, ty]])
-                augmented = cv2.warpAffine(img_np, matrix, (img_np.shape[1], img_np.shape[0]))
-                
-            elif aug_idx == 2:
                 # Изменение яркости/контраста
                 alpha = np.random.uniform(0.8, 1.2)  # Контраст
                 beta = np.random.uniform(-30, 30)    # Яркость
@@ -404,77 +328,103 @@ class ImageDatasetPreparer:
             logger.warning(f"Ошибка аугментации {image_path}: {e}")
             return None
     
-    def generate_dataset_report(self, manifest_df: pd.DataFrame):
+    def create_category_mapping(self):
         """
-        Генерация отчета о датасете.
+        Создание маппинга категорий рецептов на основе манифеста.
+        """
+        if 'recipe_type' not in self.manifest_df.columns:
+            logger.warning("Колонка 'recipe_type' не найдена в манифесте")
+            return None
         
-        Args:
-            manifest_df: DataFrame с манифестом
-        """
-        if manifest_df.empty:
+        # Создаем маппинг типов рецептов на категории из конфигурации
+        recipe_types = self.manifest_df['recipe_type'].unique()
+        
+        category_mapping = {}
+        for recipe_type in recipe_types:
+            # Сопоставляем типы рецептов с категориями из конфигурации
+            recipe_type_lower = str(recipe_type).lower()
+            
+            if any(keyword in recipe_type_lower for keyword in ['терразит', 'terrazit']):
+                category = 'Терразит'
+            elif any(keyword in recipe_type_lower for keyword in ['шовн', 'shovn']):
+                category = 'Шовный'
+            elif any(keyword in recipe_type_lower for keyword in ['мастик', 'mastik']):
+                category = 'Мастика'
+            elif any(keyword in recipe_type_lower for keyword in ['терраццо', 'terratso']):
+                category = 'Терраццо'
+            elif any(keyword in recipe_type_lower for keyword in ['ретуш', 'retush']):
+                category = 'Ретушь'
+            else:
+                category = 'Терразит'  # По умолчанию
+            
+            category_mapping[recipe_type] = category
+        
+        # Сохраняем маппинг
+        mapping_path = Path("data/processed/metadata/category_mapping.json")
+        with open(mapping_path, 'w', encoding='utf-8') as f:
+            json.dump(category_mapping, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"Маппинг категорий сохранен: {mapping_path}")
+        logger.info(f"Уникальных типов рецептов: {len(category_mapping)}")
+        
+        return category_mapping
+    
+    def generate_dataset_report(self):
+        """Генерация отчета о датасете."""
+        if self.manifest_df.empty:
             logger.warning("Манифест пуст. Отчет не сгенерирован.")
             return
         
-        report_path = Path("reports/dataset_report.txt")
+        report_path = Path("reports/dataset_preparation_report.txt")
         report_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("ОТЧЕТ О ДАТАСЕТЕ ИЗОБРАЖЕНИЙ TERRAZITE AI\n")
+            f.write("ОТЧЕТ О ПОДГОТОВКЕ ДАТАСЕТА TERRAZITE AI\n")
             f.write("=" * 80 + "\n\n")
             
             f.write(f"Дата создания: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Всего изображений: {len(manifest_df)}\n\n")
+            f.write(f"Исходный манифест: {self.manifest_path}\n")
+            f.write(f"Всего записей: {len(self.manifest_df)}\n\n")
             
             # Статистика по сплитам
-            f.write("РАСПРЕДЕЛЕНИЕ ПО СПЛИТАМ:\n")
+            if 'split' in self.manifest_df.columns:
+                f.write("РАСПРЕДЕЛЕНИЕ ПО СПЛИТАМ:\n")
+                f.write("-" * 40 + "\n")
+                split_counts = self.manifest_df['split'].value_counts()
+                for split, count in split_counts.items():
+                    percentage = (count / len(self.manifest_df)) * 100
+                    f.write(f"{split.upper()}: {count} записей ({percentage:.1f}%)\n")
+            
+            # Статистика по типам рецептов
+            if 'recipe_type' in self.manifest_df.columns:
+                f.write("\nТИПЫ РЕЦЕПТОВ:\n")
+                f.write("-" * 40 + "\n")
+                type_counts = self.manifest_df['recipe_type'].value_counts()
+                for recipe_type, count in type_counts.items():
+                    percentage = (count / len(self.manifest_df)) * 100
+                    f.write(f"{recipe_type}: {count} записей ({percentage:.1f}%)\n")
+            
+            # Статистика по аугментации
+            if 'is_augmented' in self.manifest_df.columns:
+                f.write("\nАУГМЕНТАЦИЯ:\n")
+                f.write("-" * 40 + "\n")
+                augmented_count = self.manifest_df['is_augmented'].sum()
+                original_count = len(self.manifest_df) - augmented_count
+                f.write(f"Оригинальных: {original_count}\n")
+                f.write(f"Аугментированных: {augmented_count}\n")
+                f.write(f"Итого: {len(self.manifest_df)}\n")
+            
+            f.write("\nСТРУКТУРА ДАТАСЕТА:\n")
             f.write("-" * 40 + "\n")
-            split_counts = manifest_df['split'].value_counts()
-            for split, count in split_counts.items():
-                percentage = (count / len(manifest_df)) * 100
-                f.write(f"{split.upper()}: {count} изображений ({percentage:.1f}%)\n")
-            
-            f.write("\nРАСПРЕДЕЛЕНИЕ ПО КАТЕГОРИЯМ:\n")
-            f.write("-" * 40 + "\n")
-            category_counts = manifest_df['recipe_category'].value_counts()
-            for category, count in category_counts.items():
-                percentage = (count / len(manifest_df)) * 100
-                f.write(f"{category}: {count} изображений ({percentage:.1f}%)\n")
-            
-            # Статистика по рецептам
-            f.write("\nРЕЦЕПТЫ С ИЗОБРАЖЕНИЯМИ:\n")
-            f.write("-" * 40 + "\n")
-            recipe_counts = manifest_df['recipe_name'].value_counts()
-            f.write(f"Всего уникальных рецептов: {len(recipe_counts)}\n")
-            
-            f.write("\nТоп-10 рецептов по количеству изображений:\n")
-            for i, (recipe, count) in enumerate(recipe_counts.head(10).items(), 1):
-                f.write(f"  {i:2d}. {recipe}: {count} изображений\n")
-            
-            # Информация о изображениях
-            f.write("\nИНФОРМАЦИЯ ОБ ИЗОБРАЖЕНИЯХ:\n")
-            f.write("-" * 40 + "\n")
-            
-            # Пример анализа размеров (первые 10 изображений)
-            sizes = []
-            for _, row in manifest_df.head(10).iterrows():
-                try:
-                    img = Image.open(row['image_path'])
-                    sizes.append(img.size)
-                except:
-                    pass
-            
-            if sizes:
-                avg_width = sum(s[0] for s in sizes) / len(sizes)
-                avg_height = sum(s[1] for s in sizes) / len(sizes)
-                f.write(f"Средний размер: {avg_width:.0f}x{avg_height:.0f}\n")
-            
-            # Пути к данным
-            f.write("\nПУТИ К ДАННЫМ:\n")
-            f.write("-" * 40 + "\n")
-            f.write(f"Исходные изображения: {self.images_dir}\n")
-            f.write(f"Обработанные изображения: data/processed/images/\n")
-            f.write(f"Манифест: data/processed/metadata/dataset_manifest.csv\n")
+            f.write("data/processed/images/\n")
+            f.write("  ├── train/          # Тренировочные данные\n")
+            f.write("  ├── val/            # Валидационные данные\n")
+            f.write("  ├── test/           # Тестовые данные\n")
+            f.write("  └── augmented/      # Аугментированные данные\n")
+            f.write("\ndata/processed/metadata/\n")
+            f.write("  ├── category_mapping.json  # Маппинг категорий\n")
+            f.write("  └── dataset_manifest_augmented.csv  # Полный манифест\n")
         
         logger.info(f"Отчет о датасете сохранен: {report_path}")
         return report_path
@@ -482,15 +432,15 @@ class ImageDatasetPreparer:
 
 def main():
     """Основная функция скрипта."""
-    parser = argparse.ArgumentParser(description='Подготовка датасета изображений для Terrazite AI')
-    parser.add_argument('--images-dir', type=str, default=None,
-                       help='Директория с исходными изображениями')
-    parser.add_argument('--recipes-json', type=str, default=None,
-                       help='Путь к JSON файлу с рецептами')
+    parser = argparse.ArgumentParser(description='Подготовка датасета изображений на основе манифеста')
+    parser.add_argument('--manifest', type=str, default=None,
+                       help='Путь к CSV манифесту (по умолчанию ищет в data/processed/)')
     parser.add_argument('--no-augmentation', action='store_true',
                        help='Отключить аугментацию изображений')
-    parser.add_argument('--scan-only', action='store_true',
-                       help='Только сканирование без копирования')
+    parser.add_argument('--copy-only', action='store_true',
+                       help='Только копирование без аугментации')
+    parser.add_argument('--create-mapping', action='store_true',
+                       help='Создать маппинг категорий')
     
     args = parser.parse_args()
     
@@ -499,117 +449,61 @@ def main():
     
     logger.info("Запуск подготовки датасета изображений...")
     
-    # Создаем подготовщик
-    preparer = ImageDatasetPreparer(
-        images_dir=args.images_dir,
-        recipes_json=args.recipes_json
-    )
-    
-    # Сканируем существующие изображения
-    images_by_recipe = preparer.scan_existing_images()
-    
-    if not images_by_recipe:
-        logger.warning("Изображения не найдены. Создаю структуру для тестирования.")
-        # Создаем тестовую структуру
-        preparer._create_test_structure()
-        images_by_recipe = preparer.scan_existing_images()
-    
-    # Создаем манифест
-    manifest_df = preparer.create_dataset_manifest(images_by_recipe)
-    
-    if manifest_df.empty:
-        logger.error("Манифест пуст. Проверьте наличие изображений и рецептов.")
-        return
-    
-    if not args.scan_only:
+    try:
+        # Создаем подготовщик
+        preparer = ImageDatasetPreparer(args.manifest)
+        
         # Копируем изображения в структурированную директорию
-        preparer.copy_images_to_dataset_structure(manifest_df)
+        logger.info("Копирование изображений...")
+        copied_count = preparer.copy_images_to_dataset_structure()
+        
+        if copied_count == 0:
+            logger.warning("Изображения не скопированы. Проверьте пути в манифесте.")
         
         # Аугментация
-        if not args.no_augmentation:
-            manifest_df = preparer.augment_images(manifest_df)
-    
-    # Генерация отчета
-    report_path = preparer.generate_dataset_report(manifest_df)
-    
-    logger.info("Подготовка датасета завершена!")
-    
-    # Вывод сводной информации
-    print("\n" + "=" * 80)
-    print("СВОДКА ПО ДАТАСЕТУ:")
-    print("=" * 80)
-    print(f"Всего изображений: {len(manifest_df)}")
-    
-    if not manifest_df.empty:
-        print("\nРаспределение по категориям:")
-        category_counts = manifest_df['recipe_category'].value_counts()
-        for category, count in category_counts.items():
-            percentage = (count / len(manifest_df)) * 100
-            print(f"  {category}: {count} ({percentage:.1f}%)")
+        if not args.copy_only and not args.no_augmentation:
+            logger.info("Аугментация изображений...")
+            preparer.augment_images(augment_train_only=True)
         
-        print("\nРаспределение по сплитам:")
-        split_counts = manifest_df['split'].value_counts()
-        for split, count in split_counts.items():
-            print(f"  {split}: {count}")
+        # Создание маппинга категорий
+        if args.create_mapping:
+            logger.info("Создание маппинга категорий...")
+            preparer.create_category_mapping()
         
-        print(f"\nМанифест сохранен: data/processed/metadata/dataset_manifest.csv")
+        # Генерация отчета
+        report_path = preparer.generate_dataset_report()
+        
+        logger.info("Подготовка датасета завершена!")
+        
+        # Вывод сводной информации
+        print("\n" + "=" * 80)
+        print("СВОДКА ПО ДАТАСЕТУ:")
+        print("=" * 80)
+        
+        df = preparer.manifest_df
+        print(f"Всего записей в манифесте: {len(df)}")
+        
+        if 'split' in df.columns:
+            print("\nРаспределение по сплитам:")
+            for split, count in df['split'].value_counts().items():
+                print(f"  {split}: {count}")
+        
+        if 'recipe_type' in df.columns:
+            print("\nУникальных типов рецептов:", df['recipe_type'].nunique())
+        
+        print(f"\nИзображения скопированы в: data/processed/images/")
         if report_path:
             print(f"Отчет сохранен: {report_path}")
         
         print("\nСледующие шаги:")
-        print("1. Добавьте больше изображений в data/raw/images/")
+        print("1. Проверьте структуру директорий в data/processed/images/")
         print("2. Запустите обучение: python scripts/train_model.py")
-        print("3. Проверьте качество: python scripts/evaluate_model.py")
-
-
-def _create_test_structure(self):
-    """Создание тестовой структуры для демонстрации."""
-    logger.info("Создание тестовой структуры изображений...")
-    
-    # Создаем тестовые изображения
-    test_recipes = [
-        "Терразит К62А",
-        "Шовный МШ1", 
-        "Мастика К1",
-        "Терраццо Ц1М",
-        "Ретушь 1"
-    ]
-    
-    for recipe in test_recipes:
-        recipe_dir = self.images_dir / recipe
-        recipe_dir.mkdir(parents=True, exist_ok=True)
+        print("3. Используйте create_data_manifest.py для обновления манифеста")
         
-        # Создаем 3 тестовых изображения для каждого рецепта
-        for i in range(3):
-            # Создаем простое цветное изображение
-            img = Image.new('RGB', (800, 600), color=(
-                np.random.randint(100, 200),
-                np.random.randint(100, 200),
-                np.random.randint(100, 200)
-            ))
-            
-            # Добавляем текст с именем рецепта
-            from PIL import ImageDraw, ImageFont
-            draw = ImageDraw.Draw(img)
-            
-            # Используем стандартный шрифт
-            try:
-                font = ImageFont.truetype("arial.ttf", 40)
-            except:
-                font = ImageFont.load_default()
-            
-            text = f"{recipe}\nОбразец {i+1}"
-            draw.text((50, 50), text, fill=(0, 0, 0), font=font)
-            
-            # Сохраняем
-            img_path = recipe_dir / f"{recipe}_sample{i+1}.jpg"
-            img.save(img_path, "JPEG", quality=90)
-    
-    logger.info(f"Создано тестовых изображений: {len(test_recipes) * 3}")
-
-
-# Добавляем метод в класс
-ImageDatasetPreparer._create_test_structure = _create_test_structure
+    except Exception as e:
+        logger.error(f"Ошибка при подготовке датасета: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
