@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 import numpy as np
 import json
 from pathlib import Path
+import logging
 
 from ..utils.config import config
 from ..utils.logger import setup_logger
@@ -87,11 +88,16 @@ class TerraziteModel(nn.Module):
             nn.Linear(hidden_size, 1) for _ in range(num_components)
         ])
         
-        # Инициализация весов
-        self._initialize_weights()
+        # Инициализация атрибутов для маппинга компонентов
+        self.component_to_idx = {}
+        self.idx_to_component = {}
+        self.idx_to_group = {}
         
         # Загрузка информации о компонентах
         self._load_component_info()
+        
+        # Инициализация весов
+        self._initialize_weights()
         
         logger.info(f"Инициализирована модель TerraziteModel с {num_categories} категориями")
         logger.info(f"Количество компонентов: {num_components}")
@@ -315,6 +321,23 @@ class TerraziteModel(nn.Module):
         except Exception as e:
             logger.error(f"Ошибка загрузки маппинга компонентов: {e}")
     
+    def load_component_mapping_from_dict(self, mapping_data: Dict):
+        """
+        Загрузка маппинга компонентов из словаря
+        
+        Args:
+            mapping_data: Словарь с маппингом компонентов
+        """
+        self.component_to_idx = mapping_data.get('component_to_idx', {})
+        self.idx_to_component = {int(v): k for k, v in self.component_to_idx.items()}
+        
+        # Создаем обратный маппинг для групп
+        self.idx_to_group = {}
+        for component, idx in self.component_to_idx.items():
+            self.idx_to_group[idx] = self.component_to_group.get(component, 'other')
+        
+        logger.info(f"Маппинг компонентов загружен: {len(self.component_to_idx)} компонентов")
+    
     def decode_components(self, 
                          component_indices: torch.Tensor, 
                          component_values: Optional[torch.Tensor] = None) -> List[Dict[str, Any]]:
@@ -376,10 +399,47 @@ class TerraziteModel(nn.Module):
             'total_parameters': total_params,
             'trainable_parameters': trainable_params,
             'component_groups': list(self.component_groups.keys()) if self.component_groups else [],
-            'recipe_categories': self.recipe_categories
+            'recipe_categories': self.recipe_categories,
+            'component_mapping_loaded': len(self.component_to_idx) > 0,
+            'mapped_components': len(self.component_to_idx)
         }
         
         return info
+    
+    def freeze_backbone(self, freeze: bool = True):
+        """
+        Заморозка/разморозка backbone сети
+        
+        Args:
+            freeze: True - заморозить, False - разморозить
+        """
+        for param in self.image_encoder.parameters():
+            param.requires_grad = not freeze
+        
+        if freeze:
+            logger.info("Backbone сети заморожен")
+        else:
+            logger.info("Backbone сети разморожен")
+    
+    def unfreeze_backbone_layers(self, num_layers: int = 10):
+        """
+        Постепенная разморозка слоев backbone
+        
+        Args:
+            num_layers: Количество слоев для разморозки
+        """
+        # Замораживаем все слои
+        self.freeze_backbone(True)
+        
+        # Размораживаем последние num_layers слоев
+        children = list(self.image_encoder.children())
+        layers_to_unfreeze = children[-num_layers:] if num_layers < len(children) else children
+        
+        for layer in layers_to_unfreeze:
+            for param in layer.parameters():
+                param.requires_grad = True
+        
+        logger.info(f"Разморожено последних {num_layers} слоев backbone")
 
 
 class MultiTaskLoss(nn.Module):
@@ -570,6 +630,18 @@ class TerraziteEnsemble(nn.Module):
             'category_std': category_std,
             'component_std': component_std
         }
+    
+    def load_component_mapping_from_dict(self, mapping_data: Dict):
+        """
+        Загрузка маппинга компонентов из словаря для всех моделей ансамбля
+        
+        Args:
+            mapping_data: Словарь с маппингом компонентов
+        """
+        for model in self.models:
+            model.load_component_mapping_from_dict(mapping_data)
+        
+        logger.info(f"Маппинг компонентов загружен для всех {len(self.models)} моделей ансамбля")
 
 
 def create_model(model_type: str = 'terrazite', **kwargs) -> nn.Module:
@@ -617,11 +689,29 @@ def test_model():
     print(f"  Предсказанные категории: {predicted}")
     print(f"  Вероятности: {probs.shape}")
     
+    # Тестирование функции потерь
+    targets = {
+        'category': torch.randint(0, 5, (batch_size,)),
+        'components_binary': (components > 0).float(),
+        'components_values': components
+    }
+    
+    criterion = MultiTaskLoss()
+    losses = criterion(outputs, targets)
+    print(f"  Потери: {losses}")
+    
     # Информация о модели
     info = model.get_model_info()
     print(f"  Всего параметров: {info['total_parameters']:,}")
     print(f"  Обучаемых параметров: {info['trainable_parameters']:,}")
     print(f"  Группы компонентов: {len(info['component_groups'])}")
+    
+    # Тестирование ансамбля
+    ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=50)
+    ensemble_outputs = ensemble(images, components)
+    print(f"\nАнсамбль:")
+    print(f"  Категории: {ensemble_outputs['category_logits'].shape}")
+    print(f"  Компоненты: {ensemble_outputs['component_logits'].shape}")
     
     return model
 
