@@ -1,306 +1,347 @@
 """
-Тесты для основной модели TerraziteRecipeModel
+Исправленные тесты для PyTorch модели TerraziteModel
 """
 import sys
 import os
 import pytest
 import numpy as np
-import tensorflow as tf
+import torch
+from pathlib import Path
 
-# Добавляем путь к корню проекта для импорта модулей
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.models.terrazite_model import TerraziteRecipeModel, create_simple_model
-from src.models.trainer import ModelTrainer
+from src.models.terrazite_model import TerraziteModel, create_model
 
 
-class TestTerraziteModel:
-    """Тесты для класса TerraziteRecipeModel"""
+class TestTerraziteModelPyTorch:
+    """Тесты для PyTorch модели TerraziteModel"""
     
     @pytest.fixture
-    def sample_image(self):
-        """Фикстура: тестовое изображение"""
-        return np.random.rand(224, 224, 3).astype('float32')
+    def sample_image_batch(self):
+        """Фикстура: батч тестовых изображений для PyTorch"""
+        return torch.randn(4, 3, 224, 224)
     
     @pytest.fixture
-    def sample_batch_images(self):
-        """Фикстура: батч тестовых изображений"""
-        return np.random.rand(10, 224, 224, 3).astype('float32')
-    
-    @pytest.fixture
-    def sample_labels(self):
-        """Фикстура: тестовые метки"""
-        return {
-            'regression_output': np.random.rand(10, 15).astype('float32'),
-            'classification_output': tf.keras.utils.to_categorical(
-                np.random.randint(0, 5, 10), 5
-            )
-        }
+    def sample_components(self):
+        """Фикстура: тестовые компоненты"""
+        return torch.randn(4, 100)
     
     def test_model_initialization(self):
         """Тест инициализации модели"""
-        # Тестирование с параметрами по умолчанию
-        model = TerraziteRecipeModel()
-        assert model.input_shape == (224, 224, 3)
-        assert model.num_regression_outputs == 15
-        assert model.num_classes == 5
-        assert model.dropout_rate == 0.3
-        assert model.learning_rate == 0.001
-        assert model.model is None
-        assert model.history is None
-        
-        # Тестирование с пользовательскими параметрами
-        custom_model = TerraziteRecipeModel(
-            input_shape=(128, 128, 3),
-            num_regression_outputs=20,
-            num_classes=3,
-            dropout_rate=0.5,
-            learning_rate=0.0001
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
         )
-        assert custom_model.input_shape == (128, 128, 3)
-        assert custom_model.num_regression_outputs == 20
-        assert custom_model.num_classes == 3
-        assert custom_model.dropout_rate == 0.5
-        assert custom_model.learning_rate == 0.0001
+        
+        assert model.num_categories == 5
+        assert model.num_components == 100
+        assert model.hidden_size == 512
+        assert model.dropout_rate == 0.3
+        assert model.use_pretrained is True
+        
+        print(f"✅ Модель инициализирована")
+        print(f"   Категорий: {model.num_categories}")
+        print(f"   Компонентов: {model.num_components}")
     
-    def test_model_building(self):
-        """Тест построения модели"""
-        model = TerraziteRecipeModel()
-        built_model = model.build_model()
+    def test_model_forward_pass(self, sample_image_batch, sample_components):
+        """Тест прямого прохода модели"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        )
         
         # Проверяем что модель создана
-        assert built_model is not None
-        assert model.model is not None
+        assert model.image_encoder is not None
+        assert model.component_encoder is not None
+        assert model.multimodal_encoder is not None
         
-        # Проверяем входной слой
-        assert built_model.input_shape == (None, 224, 224, 3)
+        # Прямой проход с компонентами
+        outputs_with_components = model(sample_image_batch, sample_components)
         
-        # Проверяем выходные слои
-        assert len(built_model.outputs) == 2
-        assert 'regression_output' in [output.name for output in built_model.outputs]
-        assert 'classification_output' in [output.name for output in built_model.outputs]
-        
-        # Проверяем количество параметров
-        total_params = built_model.count_params()
-        assert total_params > 1000  # Модель должна иметь разумное количество параметров
-        
-        print(f"✅ Модель построена. Параметров: {total_params:,}")
-    
-    def test_model_prediction(self, sample_image):
-        """Тест предсказания модели"""
-        model = TerraziteRecipeModel()
-        model.build_model()
-        
-        # Тестирование на одном изображении
-        prediction = model.predict(sample_image)
-        
-        # Проверяем структуру ответа
-        assert isinstance(prediction, dict)
-        assert 'recipe_components' in prediction
-        assert 'aggregate_type' in prediction
-        assert 'confidence' in prediction
-        assert 'aggregate_probabilities' in prediction
-        
-        # Проверяем типы данных
-        assert isinstance(prediction['recipe_components'], list)
-        assert isinstance(prediction['aggregate_type'], str)
-        assert isinstance(prediction['confidence'], float)
-        assert isinstance(prediction['aggregate_probabilities'], list)
+        assert 'category_logits' in outputs_with_components
+        assert 'component_logits' in outputs_with_components
+        assert 'recipe_features' in outputs_with_components
+        assert 'multimodal_features' in outputs_with_components
+        assert 'component_regression' in outputs_with_components
         
         # Проверяем размерности
-        assert len(prediction['recipe_components']) == 15
-        assert len(prediction['aggregate_probabilities']) == 5
+        assert outputs_with_components['category_logits'].shape == (4, 5)
+        assert outputs_with_components['component_logits'].shape == (4, 100)
+        assert outputs_with_components['recipe_features'].shape == (4, 128)
+        assert outputs_with_components['multimodal_features'].shape == (4, 512)
+        assert outputs_with_components['component_regression'].shape == (4, 100)
         
-        # Проверяем что уверенность в пределах [0, 100]
-        assert 0 <= prediction['confidence'] <= 100
+        # Прямой проход без компонентов
+        outputs_without_components = model(sample_image_batch, None)
         
-        # Проверяем что сумма вероятностей ≈ 1
-        probs_sum = sum(prediction['aggregate_probabilities'])
-        assert abs(probs_sum - 1.0) < 0.01
+        assert outputs_without_components['category_logits'].shape == (4, 5)
+        
+        print(f"✅ Прямой проход работает")
+        print(f"   С компонентами: все выходы созданы")
+        print(f"   Без компонентов: категории созданы")
     
-    def test_model_training_structure(self, sample_batch_images, sample_labels):
-        """Тест структуры обучения модели"""
-        model = TerraziteRecipeModel()
-        model.build_model()
+    def test_model_predict_category(self, sample_image_batch, sample_components):
+        """Тест предсказания категории"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        )
         
-        # Проверяем что модель скомпилирована
-        assert model.model.optimizer is not None
-        assert model.model.loss is not None
-        assert model.model.metrics is not None
+        # Предсказание с компонентами
+        predicted_with, probs_with = model.predict_category(sample_image_batch, sample_components)
         
-        # Тестируем один шаг обучения
-        with tf.device('/CPU:0'):  # Используем CPU для тестов
-            history = model.model.fit(
-                sample_batch_images,
-                sample_labels,
-                epochs=1,
-                batch_size=2,
-                verbose=0
-            )
+        assert predicted_with.shape == (4,)
+        assert probs_with.shape == (4, 5)
         
-        # Проверяем что история обучения содержит метрики
-        assert 'loss' in history.history
-        assert 'regression_output_loss' in history.history
-        assert 'classification_output_loss' in history.history
+        # Предсказание без компонентов
+        predicted_without, probs_without = model.predict_category(sample_image_batch, None)
+        
+        assert predicted_without.shape == (4,)
+        assert probs_without.shape == (4, 5)
+        
+        # Проверяем что вероятности суммируются к 1
+        for i in range(4):
+            assert torch.allclose(probs_with[i].sum(), torch.tensor(1.0), atol=1e-5)
+            assert torch.allclose(probs_without[i].sum(), torch.tensor(1.0), atol=1e-5)
+        
+        print(f"✅ Предсказание категории работает")
+        print(f"   Форма предсказаний: {predicted_with.shape}")
+        print(f"   Форма вероятностей: {probs_with.shape}")
     
-    def test_model_save_load(self, tmp_path, sample_image):
-        """Тест сохранения и загрузки модели"""
-        model = TerraziteRecipeModel()
-        model.build_model()
+    def test_model_predict_components(self, sample_image_batch):
+        """Тест предсказания компонентов"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        )
         
-        # Сохраняем модель
-        save_path = tmp_path / "test_model.h5"
-        model.save_model(str(save_path))
+        predictions = model.predict_components(sample_image_batch, threshold=0.1)
         
-        # Проверяем что файл создан
-        assert save_path.exists()
-        assert save_path.stat().st_size > 1000  # Файл не пустой
+        assert 'binary_predictions' in predictions
+        assert 'probabilities' in predictions
+        assert 'values' in predictions
         
-        # Создаем новую модель и загружаем
-        loaded_model = TerraziteRecipeModel()
-        loaded_model.load_model(str(save_path))
+        assert predictions['binary_predictions'].shape == (4, 100)
+        assert predictions['probabilities'].shape == (4, 100)
+        assert predictions['values'].shape == (4, 100)
         
-        # Проверяем что модель загружена
-        assert loaded_model.model is not None
+        # Проверяем что бинарные предсказания действительно бинарные
+        binary_vals = predictions['binary_predictions'].unique()
+        assert torch.all((binary_vals == 0) | (binary_vals == 1))
         
-        # Сравниваем предсказания
-        original_pred = model.predict(sample_image)
-        loaded_pred = loaded_model.predict(sample_image)
+        # Проверяем что вероятности в диапазоне [0, 1]
+        assert torch.all(predictions['probabilities'] >= 0)
+        assert torch.all(predictions['probabilities'] <= 1)
         
-        # Предсказания должны быть одинаковыми (с учетом погрешности float)
-        assert len(original_pred['recipe_components']) == len(loaded_pred['recipe_components'])
-        
-        print("✅ Модель успешно сохранена и загружена")
+        print(f"✅ Предсказание компонентов работает")
+        print(f"   Бинарные предсказания: {predictions['binary_predictions'].shape}")
+        print(f"   Вероятности: {predictions['probabilities'].shape}")
     
-    def test_simple_model_creation(self):
-        """Тест создания упрощенной модели"""
-        simple_model = create_simple_model()
+    def test_model_get_info(self):
+        """Тест получения информации о модели"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        )
         
-        # Проверяем архитектуру
-        assert simple_model.input_shape == (None, 224, 224, 3)
-        assert len(simple_model.outputs) == 2
+        info = model.get_model_info()
         
-        # Проверяем слой за слоем
-        layer_types = [layer.__class__.__name__ for layer in simple_model.layers]
-        assert 'InputLayer' in layer_types
-        assert 'Conv2D' in layer_types
-        assert 'Dense' in layer_types
+        assert 'name' in info
+        assert 'num_categories' in info
+        assert 'num_components' in info
+        assert 'total_parameters' in info
+        assert 'trainable_parameters' in info
+        assert 'component_groups' in info
+        assert 'recipe_categories' in info
         
-        # Проверяем что модель может делать предсказания
-        test_input = np.random.rand(1, 224, 224, 3).astype('float32')
-        predictions = simple_model.predict(test_input, verbose=0)
+        assert info['name'] == 'TerraziteModel'
+        assert info['num_categories'] == 5
+        assert info['num_components'] == 100
+        assert info['total_parameters'] > 0
+        assert info['trainable_parameters'] > 0
         
-        assert len(predictions) == 2
-        assert predictions[0].shape == (1, 15)  # Регрессия
-        assert predictions[1].shape == (1, 5)   # Классификация
+        print(f"✅ Информация о модели:")
+        print(f"   Всего параметров: {info['total_parameters']:,}")
+        print(f"   Обучаемых: {info['trainable_parameters']:,}")
+    
+    def test_create_model_factory(self):
+        """Тест фабричной функции создания модели"""
+        # Создание обычной модели
+        model = create_model('terrazite', num_categories=5, num_components=50)
+        
+        assert isinstance(model, TerraziteModel)
+        assert model.num_categories == 5
+        assert model.num_components == 50
+        
+        print(f"✅ Фабричная функция работает для 'terrazite'")
+    
+    def test_model_on_cpu(self, sample_image_batch):
+        """Тест работы модели на CPU"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        ).cpu()
+        
+        # Убеждаемся что модель на CPU
+        assert next(model.parameters()).device.type == 'cpu'
+        
+        # Делаем предсказание
+        outputs = model(sample_image_batch.cpu(), None)
+        
+        assert outputs['category_logits'].shape == (4, 5)
+        assert outputs['category_logits'].device.type == 'cpu'
+        
+        print(f"✅ Модель работает на CPU")
+    
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_model_on_gpu(self, sample_image_batch):
+        """Тест работы модели на GPU (если доступен)"""
+        model = TerraziteModel(
+            num_categories=5,
+            num_components=100,
+            hidden_size=512
+        ).cuda()
+        
+        # Убеждаемся что модель на GPU
+        assert next(model.parameters()).device.type == 'cuda'
+        
+        # Делаем предсказание
+        outputs = model(sample_image_batch.cuda(), None)
+        
+        assert outputs['category_logits'].shape == (4, 5)
+        assert outputs['category_logits'].device.type == 'cuda'
+        
+        print(f"✅ Модель работает на GPU")
 
 
-class TestModelTrainer:
-    """Тесты для класса ModelTrainer"""
+class TestMultiTaskLoss:
+    """Тесты для мультизадачной функции потерь"""
     
     @pytest.fixture
-    def sample_dataset(self):
-        """Фикстура: тестовый датасет"""
-        X_train = np.random.rand(20, 224, 224, 3).astype('float32')
-        X_val = np.random.rand(5, 224, 224, 3).astype('float32')
-        
-        y_train_reg = np.random.rand(20, 15).astype('float32')
-        y_val_reg = np.random.rand(5, 15).astype('float32')
-        
-        y_train_cls = tf.keras.utils.to_categorical(
-            np.random.randint(0, 5, 20), 5
-        )
-        y_val_cls = tf.keras.utils.to_categorical(
-            np.random.randint(0, 5, 5), 5
-        )
-        
+    def sample_outputs(self):
+        """Фикстура: тестовые выходы модели"""
         return {
-            'X_train': X_train,
-            'X_val': X_val,
-            'y_reg_train': y_train_reg,
-            'y_reg_val': y_val_reg,
-            'y_cls_train': y_train_cls,
-            'y_cls_val': y_val_cls
+            'category_logits': torch.randn(4, 5),
+            'component_logits': torch.randn(4, 100),
+            'component_regression': torch.randn(4, 100)
         }
     
-    def test_trainer_initialization(self):
-        """Тест инициализации тренера"""
-        trainer = ModelTrainer()
-        
-        assert trainer.model is None
-        assert trainer.history is None
-        assert trainer.callbacks is not None
+    @pytest.fixture
+    def sample_targets(self):
+        """Фикстура: тестовые цели"""
+        return {
+            'category': torch.randint(0, 5, (4,)),
+            'components_binary': torch.randint(0, 2, (4, 100)).float(),
+            'components_values': torch.randn(4, 100)
+        }
     
-    def test_model_creation(self):
-        """Тест создания модели через тренер"""
-        trainer = ModelTrainer()
-        model = trainer.create_model()
+    def test_loss_initialization(self):
+        """Тест инициализации функции потерь"""
+        from src.models.terrazite_model import MultiTaskLoss
         
-        assert model is not None
-        assert trainer.model is not None
-        
-        # Проверяем архитектуру
-        assert model.input_shape == (None, 224, 224, 3)
-        assert len(model.outputs) == 2
-    
-    def test_training_process(self, sample_dataset):
-        """Тест процесса обучения"""
-        trainer = ModelTrainer()
-        
-        # Создаем модель
-        trainer.create_model()
-        
-        # Обучаем на 1 эпоху
-        history = trainer.train(
-            train_data=(
-                sample_dataset['X_train'],
-                {
-                    'regression_output': sample_dataset['y_reg_train'],
-                    'classification_output': sample_dataset['y_cls_train']
-                }
-            ),
-            val_data=(
-                sample_dataset['X_val'],
-                {
-                    'regression_output': sample_dataset['y_reg_val'],
-                    'classification_output': sample_dataset['y_cls_val']
-                }
-            ),
-            epochs=1,
-            batch_size=4
+        loss_fn = MultiTaskLoss(
+            category_weight=1.0,
+            component_weight=0.5,
+            regression_weight=0.3
         )
         
-        # Проверяем что обучение прошло
-        assert history is not None
-        assert trainer.history is not None
+        assert loss_fn.category_weight == 1.0
+        assert loss_fn.component_weight == 0.5
+        assert loss_fn.regression_weight == 0.3
         
-        # Проверяем метрики
-        assert 'loss' in history
-        assert 'regression_output_loss' in history
-        assert 'classification_output_loss' in history
+        assert isinstance(loss_fn.category_loss, torch.nn.CrossEntropyLoss)
+        assert isinstance(loss_fn.component_loss, torch.nn.BCEWithLogitsLoss)
+        assert isinstance(loss_fn.regression_loss, torch.nn.MSELoss)
+        
+        print(f"✅ Функция потерь инициализирована")
+        print(f"   Веса: category={loss_fn.category_weight}, "
+              f"component={loss_fn.component_weight}, regression={loss_fn.regression_weight}")
+    
+    def test_loss_computation(self, sample_outputs, sample_targets):
+        """Тест вычисления потерь"""
+        from src.models.terrazite_model import MultiTaskLoss
+        
+        loss_fn = MultiTaskLoss(
+            category_weight=1.0,
+            component_weight=0.5,
+            regression_weight=0.3
+        )
+        
+        losses = loss_fn(sample_outputs, sample_targets)
+        
+        assert 'category' in losses
+        assert 'component' in losses
+        assert 'regression' in losses
+        assert 'total' in losses
+        
+        assert isinstance(losses['category'], torch.Tensor)
+        assert isinstance(losses['component'], torch.Tensor)
+        assert isinstance(losses['regression'], torch.Tensor)
+        assert isinstance(losses['total'], torch.Tensor)
+        
+        # Проверяем что общая потеря - сумма взвешенных потерь
+        expected_total = (losses['category'] + losses['component'] + losses['regression'])
+        assert torch.allclose(losses['total'], expected_total)
+        
+        print(f"✅ Потери вычислены:")
+        print(f"   Категория: {losses['category'].item():.4f}")
+        print(f"   Компоненты: {losses['component'].item():.4f}")
+        print(f"   Регрессия: {losses['regression'].item():.4f}")
+        print(f"   Всего: {losses['total'].item():.4f}")
 
 
-def test_model_integration():
+def test_integration():
     """Интеграционный тест полного цикла модели"""
+    print("\n" + "="*60)
+    print("ИНТЕГРАЦИОННЫЙ ТЕСТ ПОЛНОГО ЦИКЛА")
+    print("="*60)
+    
+    # Создаем модель
+    model = TerraziteModel(
+        num_categories=5,
+        num_components=50,
+        hidden_size=256
+    )
+    
     # Создаем тестовые данные
-    images = np.random.rand(5, 224, 224, 3).astype('float32')
+    batch_size = 2
+    images = torch.randn(batch_size, 3, 224, 224)
+    components = torch.randn(batch_size, 50)
     
-    # Создаем и обучаем модель
-    model = TerraziteRecipeModel()
-    model.build_model()
+    # Прямой проход
+    outputs = model(images, components)
     
-    # Тестируем батч предсказаний
-    for i in range(images.shape[0]):
-        prediction = model.predict(images[i])
-        
-        # Проверяем валидность предсказания
-        assert prediction['aggregate_type'] in ['мрамор', 'кварц', 'гранит', 'слюда', 'известняк', 'неизвестно']
-        assert all(0 <= p <= 100 for p in prediction['recipe_components'])
+    # Проверяем выходы
+    assert outputs['category_logits'].shape == (batch_size, 5)
+    assert outputs['component_logits'].shape == (batch_size, 50)
     
-    print("✅ Интеграционный тест пройден")
+    # Предсказание категории
+    predicted, probs = model.predict_category(images, components)
+    assert predicted.shape == (batch_size,)
+    assert probs.shape == (batch_size, 5)
+    
+    # Предсказание компонентов
+    component_preds = model.predict_components(images, threshold=0.1)
+    assert component_preds['binary_predictions'].shape == (batch_size, 50)
+    
+    # Информация о модели
+    info = model.get_model_info()
+    assert info['total_parameters'] > 1000
+    
+    print(f"\n✅ Интеграционный тест пройден:")
+    print(f"   Создана модель: {info['name']}")
+    print(f"   Параметров: {info['total_parameters']:,}")
+    print(f"   Тестовый батч: {batch_size} изображений")
+    print(f"   Категории: {info['num_categories']}")
+    print(f"   Компоненты: {info['num_components']}")
 
 
 if __name__ == "__main__":
     # Запуск тестов напрямую
-    import sys
-    sys.exit(pytest.main([__file__, "-v"]))
+    pytest.main([__file__, "-v"])
