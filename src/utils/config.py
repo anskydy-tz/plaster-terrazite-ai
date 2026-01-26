@@ -20,10 +20,10 @@ class DataConfig:
     # Директории
     raw_data_dir: str = "data/raw"
     processed_data_dir: str = "data/processed"
-    images_dir: str = "data/raw/images"
+    images_dir: str = "data/processed/images"
     
     # Файлы
-    excel_file: str = "Рецептуры терразит.xlsx"
+    excel_file: str = "recipes.xlsx"
     processed_json: str = "recipes_processed.json"
     ml_data_file: str = "ml_ready_data.json"
     
