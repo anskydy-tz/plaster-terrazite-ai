@@ -139,6 +139,7 @@ class ModelConfig:
     dropout_rate: float = 0.3
     
     # Обучение
+    batch_size: int = 32  # ДОБАВЛЕНО: размер батча
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
     epochs: int = 100
