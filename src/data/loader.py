@@ -459,12 +459,13 @@ class RecipeLoader:
 
 
 class TerraziteDataset(Dataset):
-    """Датасет для терразитовых составов с поддержкой категорий"""
+    """Датасет для терразитовых составов с поддержкой категорий и фиксированными векторами компонентов"""
     
     def __init__(self, recipes_data: List[RecipeData], 
                  image_dir: str = None,
                  transform=None,
-                 include_components: bool = True):
+                 include_components: bool = True,
+                 component_mapping: Optional[Dict] = None):
         """
         Инициализация датасета
         
@@ -473,11 +474,13 @@ class TerraziteDataset(Dataset):
             image_dir: Директория с изображениями
             transform: Трансформации для изображений
             include_components: Включать ли компоненты в данные
+            component_mapping: Маппинг компонентов для фиксированных векторов
         """
         self.recipes = recipes_data
         self.image_dir = Path(image_dir) if image_dir else None
         self.transform = transform
         self.include_components = include_components
+        self.component_mapping = component_mapping or {}
         
         # Маппинг категорий в индексы
         self.categories = sorted(set([r.category for r in recipes_data]))
@@ -487,6 +490,12 @@ class TerraziteDataset(Dataset):
         # Загрузка изображений
         self.images = []
         self._load_images()
+        
+        # Предварительная векторизация компонентов (если есть маппинг)
+        if self.include_components and self.component_mapping:
+            self.component_vectors = self._precompute_component_vectors()
+        else:
+            self.component_vectors = None
     
     def _load_images(self):
         """Загрузка путей к изображениям"""
@@ -512,6 +521,41 @@ class TerraziteDataset(Dataset):
             else:
                 logger.warning(f"Изображения для рецепта {recipe.name} не найдены")
     
+    def _precompute_component_vectors(self) -> List[torch.Tensor]:
+        """Предварительное вычисление векторов компонентов фиксированной длины"""
+        vectors = []
+        
+        if 'component_to_idx' not in self.component_mapping:
+            logger.warning("В component_mapping отсутствует 'component_to_idx'")
+            return vectors
+        
+        component_to_idx = self.component_mapping['component_to_idx']
+        num_components = len(component_to_idx)
+        
+        for recipe in self.recipes:
+            vector = torch.zeros(num_components, dtype=torch.float32)
+            
+            for component, value in recipe.components.items():
+                if component in component_to_idx:
+                    idx = component_to_idx[component]
+                    vector[idx] = value / 1000.0  # Нормализация к тоннам
+            
+            vectors.append(vector)
+        
+        logger.info(f"Предварительно вычислено {len(vectors)} векторов компонентов длиной {num_components}")
+        return vectors
+    
+    def _get_component_vector(self, recipe: RecipeData, recipe_idx: int) -> torch.Tensor:
+        """Получение вектора компонентов фиксированной длины"""
+        if self.component_vectors is not None and recipe_idx < len(self.component_vectors):
+            return self.component_vectors[recipe_idx]
+        
+        # Резервный вариант: создаем вектор нулевой длины
+        if self.include_components:
+            logger.warning(f"Вектор компонентов не предвычислен для рецепта {recipe_idx}. Возвращаю нулевой вектор.")
+        
+        return torch.zeros(1, dtype=torch.float32)
+    
     def __len__(self) -> int:
         """Количество элементов в датасете"""
         return len(self.recipes) * max(1, len(self.images) // max(len(self.recipes), 1))
@@ -531,22 +575,18 @@ class TerraziteDataset(Dataset):
             if self.transform:
                 image = self.transform(image)
         
-        # Подготовка компонентов
-        components = None
-        if self.include_components and recipe.components:
-            # Создаем вектор компонентов
-            components = np.array(list(recipe.components.values()), dtype=np.float32)
-            components = components / 1000.0  # Нормализация
+        # Вектор компонентов фиксированной длины
+        components = self._get_component_vector(recipe, recipe_idx)
         
         # Категория
         category_idx = self.category_to_idx.get(recipe.category, 0)
         
         item = {
             'name': recipe.name,
-            'category': category_idx,
+            'category': torch.tensor(category_idx, dtype=torch.long),
             'category_name': recipe.category,
-            'image': image if image is not None else torch.zeros((3, 224, 224)),
-            'components': torch.FloatTensor(components) if components is not None else torch.zeros(1),
+            'image': torch.FloatTensor(image).permute(2, 0, 1) if image is not None else torch.zeros((3, 224, 224)),
+            'components': components,
             'components_dict': recipe.components
         }
         
