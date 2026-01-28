@@ -1,5 +1,4 @@
-# Создаем файл final_check.py
-echo "import sys
+import sys
 sys.path.append('src')
 import json
 import torch
@@ -68,4 +67,4 @@ if success_count == total_count:
 else:
     print(f'⚠ ПРОЙДЕНО ПРОВЕРОК: {success_count}/{total_count}')
     print('Требуется исправление ошибок.')
-print('='*60)" > final_check.py
+print('='*60)
