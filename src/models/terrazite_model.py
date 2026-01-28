@@ -1,6 +1,6 @@
 """
 Модель машинного обучения для определения рецепта терразитовой штукатурки по изображению
-с поддержкой категорий компонентов
+с поддержкой категорий компонентов (без воды)
 """
 import torch
 import torch.nn as nn
@@ -21,12 +21,12 @@ logger = setup_logger(__name__)
 class TerraziteModel(nn.Module):
     """
     Основная модель для определения рецепта терразитовой штукатурки
-    с мультимодальной архитектурой (изображение + компоненты)
+    с мультимодальной архитектурой (изображение + компоненты без воды)
     """
     
     def __init__(self, 
                  num_categories: int = 5,  # 5 категорий: Терразит, Шовный, Мастика, Терраццо, Ретушь
-                 num_components: int = 100,  # Количество уникальных компонентов
+                 num_components: int = 58,  # ИСПРАВЛЕНО: 58 компонентов без воды
                  hidden_size: int = 512,
                  dropout_rate: float = 0.3,
                  use_pretrained: bool = True):
@@ -35,7 +35,7 @@ class TerraziteModel(nn.Module):
         
         Args:
             num_categories: Количество категорий рецептов
-            num_components: Количество уникальных компонентов
+            num_components: Количество уникальных компонентов (без воды)
             hidden_size: Размер скрытого слоя
             dropout_rate: Rate для dropout
             use_pretrained: Использовать предобученные веса для ResNet
@@ -54,7 +54,7 @@ class TerraziteModel(nn.Module):
         num_features = self.image_encoder.fc.in_features
         self.image_encoder.fc = nn.Identity()  # Удаляем классификатор
         
-        # Энкодер для компонентов
+        # Энкодер для компонентов (без воды)
         self.component_encoder = nn.Sequential(
             nn.Linear(num_components, hidden_size * 2),
             nn.BatchNorm1d(hidden_size * 2),
@@ -80,27 +80,27 @@ class TerraziteModel(nn.Module):
         
         # Классификаторы
         self.category_classifier = nn.Linear(hidden_size, num_categories)  # Категория рецепта
-        self.component_predictor = nn.Linear(hidden_size, num_components)  # Компоненты
+        self.component_predictor = nn.Linear(hidden_size, num_components)  # Компоненты (без воды)
         self.recipe_classifier = nn.Linear(hidden_size, 128)  # Конкретный рецепт
         
-        # Слои для регрессии компонентов
+        # Слои для регрессии компонентов (без воды)
         self.component_regressors = nn.ModuleList([
             nn.Linear(hidden_size, 1) for _ in range(num_components)
         ])
         
-        # Инициализация атрибутов для маппинга компонентов
+        # Инициализация атрибутов для маппинга компонентов (без воды)
         self.component_to_idx = {}
         self.idx_to_component = {}
         self.idx_to_group = {}
         
-        # Загрузка информации о компонентах
+        # Загрузка информации о компонентах (без воды)
         self._load_component_info()
         
         # Инициализация весов
         self._initialize_weights()
         
         logger.info(f"Инициализирована модель TerraziteModel с {num_categories} категориями")
-        logger.info(f"Количество компонентов: {num_components}")
+        logger.info(f"Количество компонентов (без воды): {num_components}")
     
     def _initialize_weights(self):
         """Инициализация весов слоев"""
@@ -114,21 +114,23 @@ class TerraziteModel(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def _load_component_info(self):
-        """Загрузка информации о компонентах из конфигурации"""
+        """Загрузка информации о компонентах из конфигурации (без воды)"""
         try:
             # Загружаем группы компонентов из конфигурации
             self.component_groups = self.config.data.component_groups
             
-            # Инвертируем маппинг: компонент -> группа
+            # Инвертируем маппинг: компонент -> группа (исключая воду)
             self.component_to_group = {}
             for group_name, components in self.component_groups.items():
                 for component in components:
-                    self.component_to_group[component] = group_name
+                    # Пропускаем компоненты с водой
+                    if 'вода' not in component.lower():
+                        self.component_to_group[component] = group_name
             
             # Загружаем категории рецептов
             self.recipe_categories = self.config.data.recipe_categories
             
-            logger.info(f"Загружено групп компонентов: {len(self.component_groups)}")
+            logger.info(f"Загружено групп компонентов (без воды): {len(self.component_groups)}")
             logger.info(f"Загружено категорий рецептов: {len(self.recipe_categories)}")
             
         except Exception as e:
@@ -170,12 +172,12 @@ class TerraziteModel(nn.Module):
         # Предсказания
         outputs = {
             'category_logits': self.category_classifier(multimodal_features),  # Категория рецепта
-            'component_logits': self.component_predictor(multimodal_features),  # Все компоненты
+            'component_logits': self.component_predictor(multimodal_features),  # Все компоненты (без воды)
             'recipe_features': self.recipe_classifier(multimodal_features),  # Признаки для рецепта
             'multimodal_features': multimodal_features  # Общие признаки
         }
         
-        # Регрессия для каждого компонента
+        # Регрессия для каждого компонента (без воды)
         component_predictions = []
         for i, regressor in enumerate(self.component_regressors):
             pred = regressor(multimodal_features)
@@ -208,7 +210,7 @@ class TerraziteModel(nn.Module):
                           images: torch.Tensor, 
                           threshold: float = 0.1) -> Dict[str, torch.Tensor]:
         """
-        Предсказание компонентов рецепта
+        Предсказание компонентов рецепта (без воды)
         
         Args:
             images: Тензор изображений
@@ -234,7 +236,7 @@ class TerraziteModel(nn.Module):
                                         component_predictions: torch.Tensor,
                                         component_probs: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Агрегация предсказаний компонентов по группам
+        Агрегация предсказаний компонентов по группам (без воды)
         
         Args:
             component_predictions: Бинарные предсказания компонентов
@@ -272,6 +274,10 @@ class TerraziteModel(nn.Module):
         for group_name, components in self.component_groups.items():
             group_indices = []
             for component in components:
+                # Пропускаем компоненты с водой
+                if 'вода' in component.lower():
+                    continue
+                    
                 if component in component_to_idx:
                     group_indices.append(component_to_idx[component])
             
@@ -299,7 +305,7 @@ class TerraziteModel(nn.Module):
     
     def load_component_mapping(self, mapping_path: str):
         """
-        Загрузка маппинга компонентов из файла
+        Загрузка маппинга компонентов из файла (без воды)
         
         Args:
             mapping_path: Путь к JSON файлу с маппингом
@@ -308,41 +314,64 @@ class TerraziteModel(nn.Module):
             with open(mapping_path, 'r', encoding='utf-8') as f:
                 mapping_data = json.load(f)
             
-            self.component_to_idx = mapping_data.get('component_to_idx', {})
-            self.idx_to_component = {int(v): k for k, v in self.component_to_idx.items()}
+            # Фильтруем компоненты с водой
+            filtered_mapping = {}
+            for idx_str, component in mapping_data.items():
+                if 'вода' not in component.lower():
+                    filtered_mapping[idx_str] = component
+            
+            self.component_to_idx = {v: int(k) for k, v in filtered_mapping.items()}
+            self.idx_to_component = {int(k): v for k, v in filtered_mapping.items()}
             
             # Создаем обратный маппинг для групп
             self.idx_to_group = {}
-            for component, idx in self.component_to_idx.items():
+            for idx, component in self.idx_to_component.items():
                 self.idx_to_group[idx] = self.component_to_group.get(component, 'other')
             
-            logger.info(f"Загружен маппинг для {len(self.component_to_idx)} компонентов")
+            logger.info(f"Загружен маппинг для {len(self.component_to_idx)} компонентов (без воды)")
             
         except Exception as e:
             logger.error(f"Ошибка загрузки маппинга компонентов: {e}")
     
     def load_component_mapping_from_dict(self, mapping_data: Dict):
         """
-        Загрузка маппинга компонентов из словаря
+        Загрузка маппинга компонентов из словаря (без воды)
         
         Args:
             mapping_data: Словарь с маппингом компонентов
         """
-        self.component_to_idx = mapping_data.get('component_to_idx', {})
-        self.idx_to_component = {int(v): k for k, v in self.component_to_idx.items()}
+        # Проверяем структуру mapping_data
+        if 'component_to_idx' in mapping_data:
+            # Фильтруем компоненты с водой
+            component_to_idx = {}
+            for component, idx in mapping_data['component_to_idx'].items():
+                if 'вода' not in component.lower():
+                    component_to_idx[component] = idx
+            
+            self.component_to_idx = component_to_idx
+            self.idx_to_component = {int(v): k for k, v in component_to_idx.items()}
+        else:
+            # Предполагаем, что это простой маппинг idx->component
+            filtered_mapping = {}
+            for idx_str, component in mapping_data.items():
+                if 'вода' not in component.lower():
+                    filtered_mapping[idx_str] = component
+            
+            self.component_to_idx = {v: int(k) for k, v in filtered_mapping.items()}
+            self.idx_to_component = {int(k): v for k, v in filtered_mapping.items()}
         
         # Создаем обратный маппинг для групп
         self.idx_to_group = {}
         for component, idx in self.component_to_idx.items():
             self.idx_to_group[idx] = self.component_to_group.get(component, 'other')
         
-        logger.info(f"Маппинг компонентов загружен: {len(self.component_to_idx)} компонентов")
+        logger.info(f"Маппинг компонентов загружен: {len(self.component_to_idx)} компонентов (без воды)")
     
     def decode_components(self, 
                          component_indices: torch.Tensor, 
                          component_values: Optional[torch.Tensor] = None) -> List[Dict[str, Any]]:
         """
-        Декодирование предсказанных компонентов в читаемый формат
+        Декодирование предсказанных компонентов в читаемый формат (без воды)
         
         Args:
             component_indices: Индексы предсказанных компонентов
@@ -401,7 +430,8 @@ class TerraziteModel(nn.Module):
             'component_groups': list(self.component_groups.keys()) if self.component_groups else [],
             'recipe_categories': self.recipe_categories,
             'component_mapping_loaded': len(self.component_to_idx) > 0,
-            'mapped_components': len(self.component_to_idx)
+            'mapped_components': len(self.component_to_idx),
+            'note': 'Модель работает только с сухими компонентами (вода исключена)'
         }
         
         return info
@@ -449,8 +479,8 @@ class MultiTaskLoss(nn.Module):
     
     def __init__(self, 
                  category_weight: float = 1.0,
-                 component_weight: float = 0.5,
-                 regression_weight: float = 0.3):
+                 component_weight: float = 0.8,  # ИСПРАВЛЕНО: увеличено, так как компоненты важны
+                 regression_weight: float = 0.5):  # ИСПРАВЛЕНО: увеличено для лучшей регрессии
         """
         Инициализация функции потерь
         
@@ -508,20 +538,20 @@ class MultiTaskLoss(nn.Module):
 
 class TerraziteEnsemble(nn.Module):
     """
-    Ансамбль моделей для улучшения точности предсказаний
+    Ансамбль моделей для улучшения точности предсказаний (без воды)
     """
     
     def __init__(self, 
                  num_models: int = 3,
                  num_categories: int = 5,
-                 num_components: int = 100):
+                 num_components: int = 58):  # ИСПРАВЛЕНО: 58 компонентов без воды
         """
         Инициализация ансамбля
         
         Args:
             num_models: Количество моделей в ансамбле
             num_categories: Количество категорий
-            num_components: Количество компонентов
+            num_components: Количество компонентов (без воды)
         """
         super(TerraziteEnsemble, self).__init__()
         
@@ -636,7 +666,7 @@ class TerraziteEnsemble(nn.Module):
         Загрузка маппинга компонентов из словаря для всех моделей ансамбля
         
         Args:
-            mapping_data: Словарь с маппингом компонентов
+            mapping_data: Словарь с маппингами компонентов
         """
         for model in self.models:
             model.load_component_mapping_from_dict(mapping_data)
@@ -666,17 +696,17 @@ def create_model(model_type: str = 'terrazite', **kwargs) -> nn.Module:
 def test_model():
     """Тестирование модели"""
     # Создаем тестовую модель
-    model = TerraziteModel(num_categories=5, num_components=50)
+    model = TerraziteModel(num_categories=5, num_components=58)
     
     # Тестовые данные
     batch_size = 4
     images = torch.randn(batch_size, 3, 224, 224)
-    components = torch.randn(batch_size, 50)
+    components = torch.randn(batch_size, 58)
     
     # Прямой проход
     outputs = model(images, components)
     
-    print("Тестирование модели:")
+    print("Тестирование модели (без воды):")
     print(f"  Входные изображения: {images.shape}")
     print(f"  Входные компоненты: {components.shape}")
     print(f"  Выходные категории: {outputs['category_logits'].shape}")
@@ -705,11 +735,12 @@ def test_model():
     print(f"  Всего параметров: {info['total_parameters']:,}")
     print(f"  Обучаемых параметров: {info['trainable_parameters']:,}")
     print(f"  Группы компонентов: {len(info['component_groups'])}")
+    print(f"  Примечание: {info['note']}")
     
     # Тестирование ансамбля
-    ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=50)
+    ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=58)
     ensemble_outputs = ensemble(images, components)
-    print(f"\nАнсамбль:")
+    print(f"\nАнсамбль (без воды):")
     print(f"  Категории: {ensemble_outputs['category_logits'].shape}")
     print(f"  Компоненты: {ensemble_outputs['component_logits'].shape}")
     
