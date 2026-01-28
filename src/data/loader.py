@@ -13,8 +13,9 @@ from torch.utils.data import Dataset
 from PIL import Image
 import cv2
 
-from ..utils.logger import setup_logger
-from .component_analyzer import ComponentAnalyzer  # Импортируем анализатор
+# Исправляем импорт с абсолютного пути
+from src.utils.logger import setup_logger
+from src.data.component_analyzer import ComponentAnalyzer  # Импортируем анализатор
 
 logger = setup_logger(__name__)
 
@@ -595,7 +596,7 @@ class TerraziteDataset(Dataset):
         return torch.zeros(1, dtype=torch.float32)
     
     def __len__(self) -> int:
-        """Количество элементов в датасете"""
+        """Количество элементов в датасета"""
         return len(self.recipes) * max(1, len(self.images) // max(len(self.recipes), 1))
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
