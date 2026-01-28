@@ -123,6 +123,8 @@ class DataConfig:
     horizontal_flip: bool = True
 
 
+# Внести следующие изменения в src/utils/config.py:
+
 @dataclass
 class ModelConfig:
     """Конфигурация модели"""
@@ -130,7 +132,7 @@ class ModelConfig:
     model_name: str = "TerraziteResNet50"
     input_size: tuple = (224, 224, 3)
     num_categories: int = 5  # Терразит, Шовный, Мастика, Терраццо, Ретушь
-    num_components: int = 100  # Будет обновлено после анализа данных
+    num_components: int = 58  # ИЗМЕНЕНО: Обновить на 58 после анализа данных
     
     # Архитектура
     backbone: str = "resnet50"
@@ -139,16 +141,50 @@ class ModelConfig:
     dropout_rate: float = 0.3
     
     # Обучение
-    batch_size: int = 32  # ДОБАВЛЕНО: размер батча
+    batch_size: int = 8  # ИЗМЕНЕНО: Уменьшено для тестирования
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    epochs: int = 100
+    epochs: int = 50  # ИЗМЕНЕНО: Уменьшено для тестирования
     early_stopping_patience: int = 10
     
     # Loss weights
     category_weight: float = 1.0
-    component_weight: float = 0.5
-    regression_weight: float = 0.3
+    component_weight: float = 0.8  # ИЗМЕНЕНО: Увеличено, так как компоненты важны
+    regression_weight: float = 0.5  # ИЗМЕНЕНО: Увеличено для лучшей регрессии
+
+# Обновляем метод update_from_excel, чтобы он правильно определял количество компонентов
+def update_from_excel(self, excel_path: str = None):
+    """
+    Обновление конфигурации на основе анализа Excel файла
+    
+    Args:
+        excel_path: Путь к Excel файлу (если None, используется из конфигурации)
+    """
+    try:
+        from src.data.component_analyzer import ComponentAnalyzer
+        
+        excel_path = excel_path or str(Path(self.project_root) / self.data.excel_file)
+        
+        if not Path(excel_path).exists():
+            logger.warning(f"Excel файл не найден для обновления конфигурации: {excel_path}")
+            return
+        
+        # Анализ Excel файла
+        analyzer = ComponentAnalyzer(excel_path)
+        analyzer.load_excel()
+        features = analyzer.get_component_features()
+        
+        # Обновляем количество компонентов - исключая воду
+        component_list = features.get('component_list', [])
+        # Фильтруем компоненты с водой
+        components_without_water = [c for c in component_list if 'вода' not in c.lower()]
+        self.model.num_components = len(components_without_water)
+        
+        logger.info(f"Конфигурация обновлена на основе анализа Excel файла")
+        logger.info(f"Количество компонентов (без воды): {self.model.num_components}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении конфигурации из Excel: {e}")
 
 
 @dataclass
