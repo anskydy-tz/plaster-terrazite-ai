@@ -78,23 +78,50 @@ class RecipeLoader:
         else:
             self.analyzer = component_analyzer
         
-        # Загружаем компоненты и их группы
+        # Загружаем компоненты и их группы, исключая воду
         self._load_component_config()
         
     def _load_component_config(self):
-        """Загрузка конфигурации компонентов из анализатора"""
+        """Загрузка конфигурации компонентов из анализатора с фильтрацией воды"""
         try:
             # Получаем маппинг категорий
             category_mapping = self.analyzer.get_category_mapping()
             self.categories = category_mapping['category_labels']
             self.component_groups = category_mapping['component_groups']
             
-            # Получаем признаки компонентов для ML
-            self.component_features = self.analyzer.get_component_features()
+            # Получаем признаки компонентов для ML и фильтруем воду
+            raw_features = self.analyzer.get_component_features()
+            
+            # Фильтруем компоненты с водой
+            component_to_idx = {}
+            idx_to_component = {}
+            
+            for component, idx in raw_features.get('component_to_idx', {}).items():
+                if 'вода' not in component.lower():
+                    # Перенумеровываем индексы
+                    new_idx = len(component_to_idx)
+                    component_to_idx[component] = new_idx
+                    idx_to_component[new_idx] = component
+                else:
+                    logger.debug(f"Исключен компонент с водой: {component}")
+            
+            # Обновляем component_groups, удаляя компоненты с водой
+            filtered_groups = {}
+            for group_name, components in raw_features.get('component_groups', {}).items():
+                filtered_components = [c for c in components if 'вода' not in c.lower()]
+                if filtered_components:
+                    filtered_groups[group_name] = filtered_components
+            
+            self.component_features = {
+                'component_to_idx': component_to_idx,
+                'idx_to_component': idx_to_component,
+                'component_groups': filtered_groups,
+                'total_components': len(component_to_idx)
+            }
             
             logger.info(f"Загружено категорий: {len(self.categories)}")
-            logger.info(f"Загружено групп компонентов: {len(self.component_groups)}")
-            logger.info(f"Общее количество уникальных компонентов: {self.component_features['total_components']}")
+            logger.info(f"Загружено групп компонентов: {len(self.component_features['component_groups'])}")
+            logger.info(f"Общее количество уникальных компонентов (без воды): {self.component_features['total_components']}")
             
         except Exception as e:
             logger.warning(f"Не удалось загрузить конфигурацию компонентов: {e}")
@@ -173,8 +200,8 @@ class RecipeLoader:
             self.analyzer.df = self.df
             self.analyzer.analyze_components()
             
-            # Обновляем признаки компонентов после анализа
-            self.component_features = self.analyzer.get_component_features()
+            # Обновляем признаки компонентов после анализа (исключая воду)
+            self._load_component_config()
             
             return self.df
             
@@ -207,13 +234,13 @@ class RecipeLoader:
     
     def vectorize_components(self, components: Dict[str, float]) -> np.ndarray:
         """
-        Векторизация компонентов для ML модели
+        Векторизация компонентов для ML модели (исключая воду)
         
         Args:
             components: Словарь компонентов
             
         Returns:
-            Вектор признаков
+            Вектор признаков без водных компонентов
         """
         if not self.component_features or 'component_to_idx' not in self.component_features:
             raise ValueError("Признаки компонентов не загружены. Сначала выполните load_excel()")
@@ -224,9 +251,16 @@ class RecipeLoader:
         component_to_idx = self.component_features['component_to_idx']
         
         for component, value in components.items():
+            # Пропускаем компоненты с водой
+            if 'вода' in component.lower():
+                logger.debug(f"Пропущен компонент с водой при векторизации: {component}")
+                continue
+                
             if component in component_to_idx:
                 idx = component_to_idx[component]
                 vector[idx] = value / 1000.0  # Нормализация к тоннам
+            else:
+                logger.warning(f"Компонент не найден в маппинге: {component}")
         
         return vector
     
@@ -262,7 +296,7 @@ class RecipeLoader:
         Получение всех рецептов
         
         Args:
-            include_components: Включать ли компоненты
+            include_components: Включать ли компоненты в данные
             
         Returns:
             Список объектов RecipeData
@@ -299,13 +333,13 @@ class RecipeLoader:
         if not self.recipes:
             self.get_all_recipes()
         
-        # Векторизация целевых компонентов
+        # Векторизация целевых компонентов (исключая воду)
         target_vector = self.vectorize_components(target_components)
         
         similarities = []
         
         for recipe in self.recipes:
-            # Векторизация компонентов рецепта
+            # Векторизация компонентов рецепта (исключая воду)
             recipe_vector = self.vectorize_components(recipe.components)
             
             # Косинусное сходство
@@ -459,7 +493,7 @@ class RecipeLoader:
 
 
 class TerraziteDataset(Dataset):
-    """Датасет для терразитовых составов с поддержкой категорий и фиксированными векторами компонентов"""
+    """Датасет для терразитовых составов с поддержкой категорий и фиксированными векторами компонентов (без воды)"""
     
     def __init__(self, recipes_data: List[RecipeData], 
                  image_dir: str = None,
@@ -522,7 +556,7 @@ class TerraziteDataset(Dataset):
                 logger.warning(f"Изображения для рецепта {recipe.name} не найдены")
     
     def _precompute_component_vectors(self) -> List[torch.Tensor]:
-        """Предварительное вычисление векторов компонентов фиксированной длины"""
+        """Предварительное вычисление векторов компонентов фиксированной длины (без воды)"""
         vectors = []
         
         if 'component_to_idx' not in self.component_mapping:
@@ -536,17 +570,21 @@ class TerraziteDataset(Dataset):
             vector = torch.zeros(num_components, dtype=torch.float32)
             
             for component, value in recipe.components.items():
+                # Пропускаем компоненты с водой
+                if 'вода' in component.lower():
+                    continue
+                    
                 if component in component_to_idx:
                     idx = component_to_idx[component]
                     vector[idx] = value / 1000.0  # Нормализация к тоннам
             
             vectors.append(vector)
         
-        logger.info(f"Предварительно вычислено {len(vectors)} векторов компонентов длиной {num_components}")
+        logger.info(f"Предварительно вычислено {len(vectors)} векторов компонентов длиной {num_components} (без воды)")
         return vectors
     
     def _get_component_vector(self, recipe: RecipeData, recipe_idx: int) -> torch.Tensor:
-        """Получение вектора компонентов фиксированной длины"""
+        """Получение вектора компонентов фиксированной длины (без воды)"""
         if self.component_vectors is not None and recipe_idx < len(self.component_vectors):
             return self.component_vectors[recipe_idx]
         
@@ -575,7 +613,7 @@ class TerraziteDataset(Dataset):
             if self.transform:
                 image = self.transform(image)
         
-        # Вектор компонентов фиксированной длины
+        # Вектор компонентов фиксированной длины (без воды)
         components = self._get_component_vector(recipe, recipe_idx)
         
         # Категория
@@ -622,7 +660,7 @@ def main():
             print(f"JSON сохранен: {result['json_path']}")
             print(f"Отчеты сохранены: {result['report_path']}")
             
-            # Пример поиска похожих рецептов
+            # Пример поиска похожих рецептов (без воды)
             test_components = {
                 'Цемент белый ПЦ500': 100,
                 'Цемент серый ПЦ500, кг': 150,
