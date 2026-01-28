@@ -1,4 +1,3 @@
-# create_component_mapping_corrected_water_fixed.py
 import json
 import pandas as pd
 from pathlib import Path
@@ -11,7 +10,7 @@ def create_component_mapping():
     
     print(f"Загружено рецептов: {len(recipes)}")
     
-    # Собираем все уникальные компоненты, исключая служебные поля и "Вода, л"
+    # Собираем все уникальные компоненты, исключая служебные поля и воду
     all_components = set()
     service_fields = ['название', 'тип', 'id', 'name', 'type', 'recipe_id', 'recipe_name']
     
@@ -29,10 +28,10 @@ def create_component_mapping():
                         skip = True
                         break
                 
-                # ЯВНО исключаем "Вода, л" и любые компоненты с "вода"
+                # ЯВНО исключаем компоненты с водой
                 if 'вода' in component_name_lower or 'воды' in component_name_lower:
-                    skip = True
                     print(f"Исключен компонент с водой: {component_name_clean}")
+                    skip = True
                 
                 if not skip and component_name_clean and component_name_clean != '0':
                     # Также проверяем, не является ли значение нулевым (пустым компонентом)
@@ -73,11 +72,53 @@ def create_component_mapping():
     df.to_csv(csv_path, index=False, encoding='utf-8')
     print(f"Создан CSV файл: {csv_path}")
     
-    # Проверяем, что "Вода, л" действительно исключена
+    # Создаем также упрощенный маппинг для модели (только реальные компоненты)
+    # Исключаем компоненты с нулевым количеством во всех рецептах
+    active_components = set()
+    for recipe in recipes:
+        if 'components' in recipe:
+            for component_name, component_amount in recipe['components'].items():
+                component_name_clean = component_name.strip()
+                # Проверяем на служебные поля
+                skip = False
+                for service_field in service_fields:
+                    if service_field in component_name_clean.lower():
+                        skip = True
+                        break
+                
+                # Исключаем воду
+                if 'вода' in component_name_clean.lower() or 'воды' in component_name_clean.lower():
+                    skip = True
+                
+                if not skip and component_name_clean:
+                    # Проверяем, используется ли компонент (количество > 0)
+                    try:
+                        amount = float(component_amount)
+                        if amount > 0:
+                            active_components.add(component_name_clean)
+                    except (ValueError, TypeError):
+                        pass
+    
+    active_component_list = sorted(list(active_components))
+    print(f"\nАктивных компонентов (используется хотя бы в одном рецепте, без воды): {len(active_component_list)}")
+    
+    active_mapping = {i: comp for i, comp in enumerate(active_component_list)}
+    active_output_path = Path("data/processed/component_mapping_active.json")
+    with open(active_output_path, 'w', encoding='utf-8') as f:
+        json.dump(active_mapping, f, ensure_ascii=False, indent=2)
+    
+    print(f"Создан маппинг активных компонентов: {active_output_path}")
+    
+    # Проверяем, что вода действительно исключена
     print(f"\nПроверка исключения воды:")
+    water_found = False
     for idx, comp in component_mapping.items():
         if 'вода' in comp.lower():
+            water_found = True
             print(f"  ВНИМАНИЕ: Найден компонент с водой: {comp}")
+    
+    if not water_found:
+        print("  ✓ Вода успешно исключена из всех маппингов")
     
     return component_mapping
 
