@@ -123,8 +123,6 @@ class DataConfig:
     horizontal_flip: bool = True
 
 
-# Внести следующие изменения в src/utils/config.py:
-
 @dataclass
 class ModelConfig:
     """Конфигурация модели"""
@@ -132,7 +130,7 @@ class ModelConfig:
     model_name: str = "TerraziteResNet50"
     input_size: tuple = (224, 224, 3)
     num_categories: int = 5  # Терразит, Шовный, Мастика, Терраццо, Ретушь
-    num_components: int = 58  # ИЗМЕНЕНО: Обновить на 58 после анализа данных
+    num_components: int = 58  # ИСПРАВЛЕНО: 58 компонентов без воды
     
     # Архитектура
     backbone: str = "resnet50"
@@ -141,50 +139,16 @@ class ModelConfig:
     dropout_rate: float = 0.3
     
     # Обучение
-    batch_size: int = 8  # ИЗМЕНЕНО: Уменьшено для тестирования
+    batch_size: int = 8  # ИСПРАВЛЕНО: уменьшено для тестирования
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    epochs: int = 50  # ИЗМЕНЕНО: Уменьшено для тестирования
+    epochs: int = 50  # ИСПРАВЛЕНО: уменьшено для тестирования
     early_stopping_patience: int = 10
     
     # Loss weights
     category_weight: float = 1.0
-    component_weight: float = 0.8  # ИЗМЕНЕНО: Увеличено, так как компоненты важны
-    regression_weight: float = 0.5  # ИЗМЕНЕНО: Увеличено для лучшей регрессии
-
-# Обновляем метод update_from_excel, чтобы он правильно определял количество компонентов
-def update_from_excel(self, excel_path: str = None):
-    """
-    Обновление конфигурации на основе анализа Excel файла
-    
-    Args:
-        excel_path: Путь к Excel файлу (если None, используется из конфигурации)
-    """
-    try:
-        from src.data.component_analyzer import ComponentAnalyzer
-        
-        excel_path = excel_path or str(Path(self.project_root) / self.data.excel_file)
-        
-        if not Path(excel_path).exists():
-            logger.warning(f"Excel файл не найден для обновления конфигурации: {excel_path}")
-            return
-        
-        # Анализ Excel файла
-        analyzer = ComponentAnalyzer(excel_path)
-        analyzer.load_excel()
-        features = analyzer.get_component_features()
-        
-        # Обновляем количество компонентов - исключая воду
-        component_list = features.get('component_list', [])
-        # Фильтруем компоненты с водой
-        components_without_water = [c for c in component_list if 'вода' not in c.lower()]
-        self.model.num_components = len(components_without_water)
-        
-        logger.info(f"Конфигурация обновлена на основе анализа Excel файла")
-        logger.info(f"Количество компонентов (без воды): {self.model.num_components}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении конфигурации из Excel: {e}")
+    component_weight: float = 0.8  # ИСПРАВЛЕНО: увеличено, так как компоненты важны
+    regression_weight: float = 0.5  # ИСПРАВЛЕНО: увеличено для лучшей регрессии
 
 
 @dataclass
@@ -228,7 +192,7 @@ class APIConfig:
 
 @dataclass
 class StreamlitConfig:
-    """Конфигурация Streamlit интерфейса"""
+    """Конфигурация Streamlit интерфейс"""
     title: str = "Terrazite AI - Подбор рецепта терразитовой штукатурки"
     page_icon: str = "🏗️"
     layout: str = "wide"
@@ -264,8 +228,9 @@ class ProjectConfig:
     streamlit: StreamlitConfig = field(default_factory=StreamlitConfig)
     
     def __post_init__(self):
-        """Пост-инициализация: создание директорий"""
+        """Пост-инициализация: создание директорий и обновление количества компонентов"""
         self._create_directories()
+        self._update_component_count_from_mapping()
     
     def _create_directories(self):
         """Создание необходимых директорий"""
@@ -285,6 +250,39 @@ class ProjectConfig:
             full_path = Path(self.project_root) / dir_path
             full_path.mkdir(parents=True, exist_ok=True)
             logger.debug(f"Создана директория: {full_path}")
+    
+    def _update_component_count_from_mapping(self):
+        """Обновление количества компонентов на основе маппинга (без воды)"""
+        try:
+            mapping_path = Path(self.project_root) / "data/processed/component_mapping.json"
+            if mapping_path.exists():
+                with open(mapping_path, 'r', encoding='utf-8') as f:
+                    component_mapping = json.load(f)
+                
+                # Фильтруем компоненты с водой
+                components_without_water = [comp for comp in component_mapping.values() 
+                                          if 'вода' not in comp.lower()]
+                
+                self.model.num_components = len(components_without_water)
+                logger.info(f"Обновлено количество компонентов из маппинга: {self.model.num_components} (без воды)")
+                
+                # Также проверяем, что в группах компонентов нет воды
+                self._filter_water_from_groups()
+                
+        except Exception as e:
+            logger.warning(f"Не удалось обновить количество компонентов из маппинга: {e}")
+    
+    def _filter_water_from_groups(self):
+        """Фильтрация компонентов с водой из групп компонентов"""
+        filtered_groups = {}
+        for group_name, components in self.data.component_groups.items():
+            filtered_components = [comp for comp in components 
+                                 if 'вода' not in comp.lower()]
+            if filtered_components:
+                filtered_groups[group_name] = filtered_components
+        
+        self.data.component_groups = filtered_groups
+        logger.info(f"Вода отфильтрована из групп компонентов. Осталось групп: {len(filtered_groups)}")
     
     def update_from_excel(self, excel_path: str = None):
         """
@@ -307,8 +305,11 @@ class ProjectConfig:
             analyzer.load_excel()
             features = analyzer.get_component_features()
             
-            # Обновляем количество компонентов
-            self.model.num_components = features.get('total_components', 100)
+            # Обновляем количество компонентов - исключая воду
+            component_list = features.get('component_list', [])
+            # Фильтруем компоненты с водой
+            components_without_water = [c for c in component_list if 'вода' not in c.lower()]
+            self.model.num_components = len(components_without_water)
             
             # Обновляем группы компонентов (если отличаются)
             current_groups_set = set(str(g) for g in self.data.component_groups.keys())
@@ -318,11 +319,14 @@ class ProjectConfig:
                 logger.info(f"Обновление групп компонентов: обнаружено {len(analyzer_groups_set)} групп")
                 self.data.component_groups = analyzer.COMPONENT_GROUPS
             
+            # Фильтруем воду из групп
+            self._filter_water_from_groups()
+            
             # Сохраняем обновленную конфигурацию
             self.save()
             
             logger.info(f"Конфигурация обновлена на основе анализа Excel файла")
-            logger.info(f"Количество компонентов: {self.model.num_components}")
+            logger.info(f"Количество компонентов (без воды): {self.model.num_components}")
             logger.info(f"Группы компонентов: {len(self.data.component_groups)}")
             
         except Exception as e:
@@ -420,6 +424,10 @@ class ProjectConfig:
         Returns:
             Название группы или None
         """
+        # Пропускаем компоненты с водой
+        if 'вода' in component_name.lower():
+            return None
+            
         for group_name, components in self.data.component_groups.items():
             if component_name in components:
                 return group_name
@@ -496,6 +504,7 @@ def setup_config(config_path: str = None) -> ProjectConfig:
     logger.info(f"Режим: {config.mode}, Отладка: {config.debug}")
     logger.info(f"Категории рецептов: {len(config.data.recipe_categories)}")
     logger.info(f"Группы компонентов: {len(config.data.component_groups)}")
+    logger.info(f"Количество компонентов в модели: {config.model.num_components} (без воды)")
     
     return config
 
