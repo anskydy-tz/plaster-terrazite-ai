@@ -130,7 +130,7 @@ class ModelConfig:
     model_name: str = "TerraziteResNet50"
     input_size: tuple = (224, 224, 3)
     num_categories: int = 5  # Терразит, Шовный, Мастика, Терраццо, Ретушь
-    num_components: int = 58  # ИСПРАВЛЕНО: 58 компонентов без воды
+    num_components: int = 52  # Фактическое количество компонентов без воды
     
     # Архитектура
     backbone: str = "resnet50"
