@@ -1,5 +1,3 @@
-# Создаем файл final_check.py
-cat > final_check.py << 'EOF'
 import sys
 sys.path.append('src')
 import json
@@ -100,4 +98,3 @@ else:
     print(f'⚠  ПРОЙДЕНО ПРОВЕРОК: {success_count}/{total_count}')
     print('Требуется исправление ошибок.')
 print('='*60)
-EOF
