@@ -13,7 +13,7 @@ cd plaster-terrazite-ai
 pip install -r requirements.txt
 
 # 3. Поместите Excel файл с рецептами в data/raw/
-# (файл должен называться "Рецептуры терразит.xlsx")
+# (файл должен называться "recipes.xlsx")
 
 # 4. Обработайте данные
 python scripts/process_excel.py
