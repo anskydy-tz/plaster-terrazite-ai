@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 import logging
 
-from ..utils.config import config
-from ..utils.logger import setup_logger
+# Исправляем импорт с абсолютного пути
+from src.utils.config import config
+from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
@@ -26,7 +27,7 @@ class TerraziteModel(nn.Module):
     
     def __init__(self, 
                  num_categories: int = 5,  # 5 категорий: Терразит, Шовный, Мастика, Терраццо, Ретушь
-                 num_components: int = 58,  # ИСПРАВЛЕНО: 58 компонентов без воды
+                 num_components: int = 52,  # Фактическое количество компонентов без воды (52)
                  hidden_size: int = 512,
                  dropout_rate: float = 0.3,
                  use_pretrained: bool = True):
@@ -292,7 +293,7 @@ class TerraziteModel(nn.Module):
                 # Средняя уверенность
                 group_confidence = group_probs.mean(dim=1)
                 
-                # Количество компонентов в группе
+                # Количество компонентов в групке
                 group_count = group_binary.sum(dim=1).long()
                 
                 group_predictions[group_name] = {
@@ -479,8 +480,8 @@ class MultiTaskLoss(nn.Module):
     
     def __init__(self, 
                  category_weight: float = 1.0,
-                 component_weight: float = 0.8,  # ИСПРАВЛЕНО: увеличено, так как компоненты важны
-                 regression_weight: float = 0.5):  # ИСПРАВЛЕНО: увеличено для лучшей регрессии
+                 component_weight: float = 0.8,  # Увеличено, так как компоненты важны
+                 regression_weight: float = 0.5):  # Увеличено для лучшей регрессии
         """
         Инициализация функции потерь
         
@@ -544,7 +545,7 @@ class TerraziteEnsemble(nn.Module):
     def __init__(self, 
                  num_models: int = 3,
                  num_categories: int = 5,
-                 num_components: int = 58):  # ИСПРАВЛЕНО: 58 компонентов без воды
+                 num_components: int = 52):  # 52 компонента без воды
         """
         Инициализация ансамбля
         
@@ -696,12 +697,12 @@ def create_model(model_type: str = 'terrazite', **kwargs) -> nn.Module:
 def test_model():
     """Тестирование модели"""
     # Создаем тестовую модель
-    model = TerraziteModel(num_categories=5, num_components=58)
+    model = TerraziteModel(num_categories=5, num_components=52)
     
     # Тестовые данные
     batch_size = 4
     images = torch.randn(batch_size, 3, 224, 224)
-    components = torch.randn(batch_size, 58)
+    components = torch.randn(batch_size, 52)
     
     # Прямой проход
     outputs = model(images, components)
@@ -738,7 +739,7 @@ def test_model():
     print(f"  Примечание: {info['note']}")
     
     # Тестирование ансамбля
-    ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=58)
+    ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=52)
     ensemble_outputs = ensemble(images, components)
     print(f"\nАнсамбль (без воды):")
     print(f"  Категории: {ensemble_outputs['category_logits'].shape}")
