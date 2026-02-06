@@ -141,19 +141,24 @@ class TerraziteModel(nn.Module):
     def _load_component_info(self):
         """Загрузка информации о компонентах из конфигурации (без воды)"""
         try:
-            # Загружаем группы компонентов из конфигурации
-            self.component_groups = self.config.data.component_groups
-            
-            # Инвертируем маппинг: компонент -> группа (исключая воду)
-            self.component_to_group = {}
-            for group_name, components in self.component_groups.items():
-                for component in components:
-                    # Пропускаем компоненты с водой
-                    if 'вода' not in component.lower():
-                        self.component_to_group[component] = group_name
-            
-            # Загружаем категории рецептов
-            self.recipe_categories = self.config.data.recipe_categories
+            # Пробуем загрузить группы компонентов
+            if CONFIG_AVAILABLE:
+                self.component_groups = config.data.component_groups
+                
+                # Инвертируем маппинг: компонент -> группа (исключая воду)
+                self.component_to_group = {}
+                for group_name, components in self.component_groups.items():
+                    for component in components:
+                        # Пропускаем компоненты с водой
+                        if 'вода' not in component.lower():
+                            self.component_to_group[component] = group_name
+                
+                # Загружаем категории рецептов
+                self.recipe_categories = config.data.recipe_categories
+            else:
+                self.component_groups = {}
+                self.component_to_group = {}
+                self.recipe_categories = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
             
             logger.info(f"Загружено групп компонентов (без воды): {len(self.component_groups)}")
             logger.info(f"Загружено категорий рецептов: {len(self.recipe_categories)}")
@@ -720,6 +725,11 @@ def create_model(model_type: str = 'terrazite', **kwargs) -> nn.Module:
 
 def test_model():
     """Тестирование модели"""
+    # Используем встроенный логгер для теста
+    import logging
+    test_logger = logging.getLogger('test')
+    test_logger.setLevel(logging.INFO)
+    
     # Создаем тестовую модель
     model = TerraziteModel(num_categories=5, num_components=52)
     
@@ -731,18 +741,18 @@ def test_model():
     # Прямой проход
     outputs = model(images, components)
     
-    print("Тестирование модели (без воды):")
-    print(f"  Входные изображения: {images.shape}")
-    print(f"  Входные компоненты: {components.shape}")
-    print(f"  Выходные категории: {outputs['category_logits'].shape}")
-    print(f"  Выходные компоненты: {outputs['component_logits'].shape}")
-    print(f"  Мультимодальные признаки: {outputs['multimodal_features'].shape}")
-    print(f"  Регрессия компонентов: {outputs['component_regression'].shape}")
+    test_logger.info("Тестирование модели (без воды):")
+    test_logger.info(f"  Входные изображения: {images.shape}")
+    test_logger.info(f"  Входные компоненты: {components.shape}")
+    test_logger.info(f"  Выходные категории: {outputs['category_logits'].shape}")
+    test_logger.info(f"  Выходные компоненты: {outputs['component_logits'].shape}")
+    test_logger.info(f"  Мультимодальные признаки: {outputs['multimodal_features'].shape}")
+    test_logger.info(f"  Регрессия компонентов: {outputs['component_regression'].shape}")
     
     # Предсказание категории
     predicted, probs = model.predict_category(images)
-    print(f"  Предсказанные категории: {predicted}")
-    print(f"  Вероятности: {probs.shape}")
+    test_logger.info(f"  Предсказанные категории: {predicted}")
+    test_logger.info(f"  Вероятности: {probs.shape}")
     
     # Тестирование функции потерь
     targets = {
@@ -753,21 +763,21 @@ def test_model():
     
     criterion = MultiTaskLoss()
     losses = criterion(outputs, targets)
-    print(f"  Потери: {losses}")
+    test_logger.info(f"  Потери: {losses}")
     
     # Информация о модели
     info = model.get_model_info()
-    print(f"  Всего параметров: {info['total_parameters']:,}")
-    print(f"  Обучаемых параметров: {info['trainable_parameters']:,}")
-    print(f"  Группы компонентов: {len(info['component_groups'])}")
-    print(f"  Примечание: {info['note']}")
+    test_logger.info(f"  Всего параметров: {info['total_parameters']:,}")
+    test_logger.info(f"  Обучаемых параметров: {info['trainable_parameters']:,}")
+    test_logger.info(f"  Группы компонентов: {len(info['component_groups'])}")
+    test_logger.info(f"  Примечание: {info['note']}")
     
     # Тестирование ансамбля
     ensemble = TerraziteEnsemble(num_models=2, num_categories=5, num_components=52)
     ensemble_outputs = ensemble(images, components)
-    print(f"\nАнсамбль (без воды):")
-    print(f"  Категории: {ensemble_outputs['category_logits'].shape}")
-    print(f"  Компоненты: {ensemble_outputs['component_logits'].shape}")
+    test_logger.info(f"\nАнсамбль (без воды):")
+    test_logger.info(f"  Категории: {ensemble_outputs['category_logits'].shape}")
+    test_logger.info(f"  Компоненты: {ensemble_outputs['component_logits'].shape}")
     
     return model
 
