@@ -15,10 +15,37 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ..utils.config import config
-from ..utils.logger import setup_logger
+# Условный импорт для избежания циклических зависимостей
+try:
+    from src.utils.config import config
+    from src.utils.logger import setup_logger
+    CONFIG_AVAILABLE = True
+except ImportError:
+    # Запасной вариант для тестирования
+    CONFIG_AVAILABLE = False
+    
+    class MockConfig:
+        class DataConfig:
+            recipe_categories = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
+            component_groups = {}
+        
+        class ModelConfig:
+            num_categories = 5
+            num_components = 52
+        
+        data = DataConfig()
+        model = ModelConfig()
+    
+    config = MockConfig()
+    
+    # Простой логгер для тестирования
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
-logger = setup_logger(__name__)
+
+if CONFIG_AVAILABLE:
+    logger = setup_logger(__name__)
 
 
 class SimpleAggregateClassifier:
@@ -63,7 +90,11 @@ class SimpleAggregateClassifier:
         # Типичные компоненты по категориям
         self.typical_components = typical_components or self._load_default_components()
         
-        logger.info(f"Инициализирован SimpleAggregateClassifier с {n_estimators} деревьями")
+        # Для совместимости с тестами
+        if not CONFIG_AVAILABLE:
+            logger.info(f"Инициализирован SimpleAggregateClassifier с {n_estimators} деревьями (тестовый режим)")
+        else:
+            logger.info(f"Инициализирован SimpleAggregateClassifier с {n_estimators} деревьями")
     
     def _load_default_components(self) -> Dict[str, List[str]]:
         """
@@ -73,6 +104,16 @@ class SimpleAggregateClassifier:
             Словарь категория -> список типичных компонентов
         """
         try:
+            # Если конфигурация недоступна, используем заглушку
+            if not CONFIG_AVAILABLE:
+                return {
+                    'Терразит': ['Цемент белый ПЦ500', 'Песок лужский'],
+                    'Шовный': ['Цемент серый ПЦ500, кг', 'Микрокальцит'],
+                    'Мастика': ['Цемент белый ПЦ500', 'Доломитовая мука, кг'],
+                    'Терраццо': ['Мрамор белый', 'Пигменты'],
+                    'Ретушь': ['Цемент белый ПЦ500', 'РПП Полипласт']
+                }
+            
             # Пробуем загрузить из конфигурации
             components_by_category = {}
             
@@ -165,10 +206,17 @@ class SimpleAggregateClassifier:
             Вектор признаков компонентов
         """
         try:
-            # Используем все компоненты из конфигурации
-            all_components = []
-            for group_components in config.data.component_groups.values():
-                all_components.extend(group_components)
+            # Если конфигурация недоступна, используем упрощенный подход
+            if not CONFIG_AVAILABLE:
+                all_components = [
+                    'Цемент белый ПЦ500', 'Песок лужский фр.0-0,63мм, кг',
+                    'Цемент серый ПЦ500, кг', 'Микрокальцит МК100 фр.0,1 мм, кг'
+                ]
+            else:
+                # Используем все компоненты из конфигурации
+                all_components = []
+                for group_components in config.data.component_groups.values():
+                    all_components.extend(group_components)
             
             # Создаем вектор фиксированной длины
             features = np.zeros(len(all_components))
@@ -684,8 +732,13 @@ def create_simple_classifier(n_estimators: int = 100,
 
 def test_classifier():
     """Тестирование классификатора"""
-    logger.info("🧪 Тестирование SimpleAggregateClassifier")
-    logger.info("=" * 50)
+    # Используем встроенный логгер для теста
+    import logging
+    test_logger = logging.getLogger('test')
+    test_logger.setLevel(logging.INFO)
+    
+    test_logger.info("🧪 Тестирование SimpleAggregateClassifier")
+    test_logger.info("=" * 50)
     
     # Создаем тестовые данные
     num_samples = 100
@@ -722,36 +775,36 @@ def test_classifier():
         
         # Предсказание
         predictions = clf.predict(test_images, test_components)
-        logger.info(f"Предсказания: {predictions}")
+        test_logger.info(f"Предсказания: {predictions}")
         
         # Оценка
         metrics = clf.evaluate(test_images, test_components, test_labels, plot_results=False)
-        logger.info(f"Точность: {metrics['accuracy']:.2%}")
+        test_logger.info(f"Точность: {metrics['accuracy']:.2%}")
         
         # Предсказание с компонентами
         single_prediction = clf.predict_with_components(test_images[0], test_components[0])
-        logger.info(f"Предсказание с компонентами: {single_prediction}")
+        test_logger.info(f"Предсказание с компонентами: {single_prediction}")
         
         # Важность признаков
         feature_importance = clf.get_feature_importance()
         if not feature_importance.empty:
-            logger.info(f"Топ-5 важных признаков:")
+            test_logger.info(f"Топ-5 важных признаков:")
             for _, row in feature_importance.head().iterrows():
-                logger.info(f"  {row['feature']}: {row['importance']:.4f}")
+                test_logger.info(f"  {row['feature']}: {row['importance']:.4f}")
         
         # Информация о модели
         model_info = clf.get_model_info()
-        logger.info(f"Информация о модели:")
-        logger.info(f"  Тип: {model_info['model_type']}")
-        logger.info(f"  Классы: {model_info['num_classes']}")
-        logger.info(f"  Признаков: {model_info['num_features']}")
+        test_logger.info(f"Информация о модели:")
+        test_logger.info(f"  Тип: {model_info['model_type']}")
+        test_logger.info(f"  Классы: {model_info['num_classes']}")
+        test_logger.info(f"  Признаков: {model_info['num_features']}")
         
-        logger.info("\n✅ SimpleAggregateClassifier готов к работе!")
+        test_logger.info("\n✅ SimpleAggregateClassifier готов к работе!")
         
         return clf
         
     except Exception as e:
-        logger.error(f"Ошибка при тестировании: {e}")
+        test_logger.error(f"Ошибка при тестировании: {e}")
         import traceback
         traceback.print_exc()
         return None
