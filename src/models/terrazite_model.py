@@ -10,13 +10,38 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 import numpy as np
 import json
 from pathlib import Path
-import logging
 
-# Исправляем импорт с абсолютного пути
-from src.utils.config import config
-from src.utils.logger import setup_logger
+# Условный импорт для избежания циклических зависимостей
+try:
+    from src.utils.config import config
+    from src.utils.logger import setup_logger
+    CONFIG_AVAILABLE = True
+except ImportError:
+    # Запасной вариант для тестирования
+    CONFIG_AVAILABLE = False
+    
+    class MockConfig:
+        class DataConfig:
+            recipe_categories = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
+            component_groups = {}
+        
+        class ModelConfig:
+            num_categories = 5
+            num_components = 52
+        
+        data = DataConfig()
+        model = ModelConfig()
+    
+    config = MockConfig()
+    
+    # Простой логгер для тестирования
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
-logger = setup_logger(__name__)
+
+if CONFIG_AVAILABLE:
+    logger = setup_logger(__name__)
 
 
 class TerraziteModel(nn.Module):
@@ -43,8 +68,7 @@ class TerraziteModel(nn.Module):
         """
         super(TerraziteModel, self).__init__()
         
-        # Загрузка конфигурации
-        self.config = config
+        # Используем предоставленные параметры или значения по умолчанию
         self.num_categories = num_categories
         self.num_components = num_components
         
