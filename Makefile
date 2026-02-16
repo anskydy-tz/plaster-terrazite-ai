@@ -1,160 +1,241 @@
-.PHONY: help install test train pipeline clean
+# Makefile для проекта Terrazite AI
+# Автоматизация основных задач: установка, подготовка данных, обучение, тестирование
+
+.PHONY: help install data prepare train test clean all quick api streamlit docs
 
 # Цвета для вывода
-GREEN=\033[0;32m
-YELLOW=\033[1;33m
-RED=\033[0;31m
-NC=\033[0m # No Color
+GREEN := \033[0;32m
+YELLOW := \033[1;33m
+RED := \033[0;31m
+BLUE := \033[0;34m
+NC := \033[0m # No Color
 
-# Помощь
+# Параметры по умолчанию
+PYTHON := python
+PIP := pip
+VENV_DIR := venv
+CHECKPOINTS_DIR := checkpoints
+REPORTS_DIR := reports
+DATA_DIR := data
+LOGS_DIR := logs
+
 help:
-	@echo "$(YELLOW)🚀 Terrazite AI - Команды управления$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(GREEN)  Terrazite AI - Makefile Commands$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo ""
-	@echo "$(GREEN)📦 Установка:$(NC)"
-	@echo "  make install           - Установить все зависимости"
-	@echo "  make install-dev       - Установить зависимости для разработки"
-	@echo "  make install-ml        - Установить ML зависимости"
+	@echo "$(YELLOW)УСТАНОВКА И НАСТРОЙКА:$(NC)"
+	@echo "  make help          - Показать эту справку"
+	@echo "  make install       - Установить все зависимости"
+	@echo "  make install-dev   - Установить зависимости для разработки"
+	@echo "  make install-min   - Установить минимальные зависимости"
+	@echo "  make venv          - Создать виртуальное окружение"
 	@echo ""
-	@echo "$(GREEN)🧪 Тестирование:$(NC)"
-	@echo "  make test              - Запустить все тесты"
-	@echo "  test-unit             - Запустить unit-тесты"
-	@echo "  test-integration      - Запустить интеграционные тесты"
-	@echo "  test-coverage         - Запустить тесты с покрытием"
+	@echo "$(YELLOW)ПОДГОТОВКА ДАННЫХ:$(NC)"
+	@echo "  make data          - Полный цикл подготовки данных"
+	@echo "  make process-excel - Только обработка Excel"
+	@echo "  make manifest      - Только создание манифестов"
+	@echo "  make prepare       - Только подготовка изображений"
+	@echo "  make test-images   - Создать тестовые изображения"
 	@echo ""
-	@echo "$(GREEN)🔄 Пайплайн данных:$(NC)"
-	@echo "  make create-data       - Создать тестовые данные"
-	@echo "  make process-data      - Обработать Excel файл"
-	@echo "  make create-manifest   - Создать манифест данных"
-	@echo "  make prepare-dataset   - Подготовить датасет изображений"
+	@echo "$(YELLOW)ОБУЧЕНИЕ И ТЕСТИРОВАНИЕ:$(NC)"
+	@echo "  make train         - Запустить обучение модели"
+	@echo "  make train-quick   - Быстрое тестовое обучение"
+	@echo "  make train-gpu     - Обучение на GPU"
+	@echo "  make test          - Запустить все тесты"
+	@echo "  make test-basic    - Базовые тесты модели"
+	@echo "  make test-full     - Полное тестирование пайплайна"
 	@echo ""
-	@echo "$(GREEN)🤖 Обучение:$(NC)"
-	@echo "  make train             - Обучить модель (полный цикл)"
-	@echo "  make train-quick       - Быстрое обучение (5 эпох)"
-	@echo "  make evaluate          - Оценить модель"
+	@echo "$(YELLOW)ЗАПУСК СИСТЕМЫ:$(NC)"
+	@echo "  make api           - Запустить API сервер"
+	@echo "  make streamlit     - Запустить веб-интерфейс"
+	@echo "  make run           - Запустить всё (API + Streamlit)"
 	@echo ""
-	@echo "$(GREEN)🚀 Пайплайн:$(NC)"
-	@echo "  make pipeline          - Полный пайплайн (данные → обучение)"
-	@echo "  make pipeline-quick    - Быстрый пайплайн (тестовый)"
+	@echo "$(YELLOW)ОЧИСТКА И ОБСЛУЖИВАНИЕ:$(NC)"
+	@echo "  make clean         - Очистить временные файлы"
+	@echo "  make clean-data    - Очистить обработанные данные"
+	@echo "  make clean-all     - Полная очистка (кроме исходников)"
+	@echo "  make docs          - Сгенерировать документацию"
+	@echo "  make lint          - Проверить код линтером"
+	@echo "  make format        - Отформатировать код"
 	@echo ""
-	@echo "$(GREEN)📊 Сервисы:$(NC)"
-	@echo "  make run-api           - Запустить API сервер"
-	@echo "  make run-ui            - Запустить веб-интерфейс"
-	@echo "  make run-all           - Запустить все сервисы"
-	@echo ""
-	@echo "$(GREEN)🧹 Очистка:$(NC)"
-	@echo "  make clean             - Очистить временные файлы"
-	@echo "  make clean-all         - Очистить всё (включая данные)"
-	@echo ""
+	@echo "$(YELLOW)ПРИМЕРЫ:$(NC)"
+	@echo "  make all           - Выполнить полный цикл (подготовка + обучение)"
+	@echo "  make quick         - Быстрый тестовый прогон всего пайплайна"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 
-# Установка
+# ─────────────────────────────────────────────────────────────────────────────
+# УСТАНОВКА И НАСТРОЙКА
+# ─────────────────────────────────────────────────────────────────────────────
+
+venv:
+	@echo "$(GREEN)🔧 Создание виртуального окружения...$(NC)"
+	$(PYTHON) -m venv $(VENV_DIR)
+	@echo "$(GREEN)✅ Виртуальное окружение создано. Активируйте: source $(VENV_DIR)/bin/activate$(NC)"
+
 install:
-	@echo "$(YELLOW)📦 Установка всех зависимостей...$(NC)"
-	pip install -r requirements.txt
-	pip install -r requirements-ml.txt
+	@echo "$(GREEN)📦 Установка зависимостей...$(NC)"
+	$(PIP) install --upgrade pip
+	$(PIP) install -e .
+	@echo "$(GREEN)✅ Зависимости установлены$(NC)"
 
 install-dev:
-	@echo "$(YELLOW)🔧 Установка зависимостей для разработки...$(NC)"
-	pip install -r requirements-dev.txt
+	@echo "$(GREEN)📦 Установка зависимостей для разработки...$(NC)"
+	$(PIP) install --upgrade pip
+	$(PIP) install -e ".[dev]"
+	@echo "$(GREEN)✅ Зависимости для разработки установлены$(NC)"
 
-install-ml:
-	@echo "$(YELLOW)🧠 Установка ML зависимостей...$(NC)"
-	pip install -r requirements-ml.txt
+install-min:
+	@echo "$(GREEN)📦 Установка минимальных зависимостей...$(NC)"
+	$(PIP) install --upgrade pip
+	$(PIP) install -e ".[minimal]"
+	@echo "$(GREEN)✅ Минимальные зависимости установлены$(NC)"
 
-# Тестирование
-test:
-	@echo "$(YELLOW)🧪 Запуск всех тестов...$(NC)"
-	python run_tests.py
+# ─────────────────────────────────────────────────────────────────────────────
+# ПОДГОТОВКА ДАННЫХ
+# ─────────────────────────────────────────────────────────────────────────────
 
-test-unit:
-	@echo "$(YELLOW)🧪 Запуск unit-тестов...$(NC)"
-	python -m pytest tests/ -v -m "not integration"
+process-excel:
+	@echo "$(GREEN)📊 Обработка Excel файла...$(NC)"
+	$(PYTHON) scripts/process_excel.py
 
-test-integration:
-	@echo "$(YELLOW)🧪 Запуск интеграционных тестов...$(NC)"
-	python -m pytest tests/ -v -m "integration"
+manifest:
+	@echo "$(GREEN)📋 Создание манифестов данных...$(NC)"
+	$(PYTHON) scripts/create_data_manifest.py
 
-test-coverage:
-	@echo "$(YELLOW)📊 Запуск тестов с покрытием...$(NC)"
-	python -m pytest tests/ --cov=src --cov-report=html --cov-report=term-missing
+prepare:
+	@echo "$(GREEN)🖼️  Подготовка датасета изображений...$(NC)"
+	$(PYTHON) scripts/prepare_image_dataset.py --create-mapping
 
-# Пайплайн данных
-create-data:
-	@echo "$(YELLOW)📄 Создание тестовых данных...$(NC)"
-	python create_test_excel.py
+test-images:
+	@echo "$(GREEN)🎨 Создание тестовых изображений...$(NC)"
+	$(PYTHON) scripts/create_test_images.py
 
-process-data:
-	@echo "$(YELLOW)📊 Обработка Excel файла...$(NC)"
-	python scripts/process_excel.py
+data: process-excel manifest prepare
+	@echo "$(GREEN)✅ Все данные подготовлены успешно!$(NC)"
 
-create-manifest:
-	@echo "$(YELLOW)📋 Создание манифеста данных...$(NC)"
-	python create_data_manifest.py
+# ─────────────────────────────────────────────────────────────────────────────
+# ОБУЧЕНИЕ И ТЕСТИРОВАНИЕ
+# ─────────────────────────────────────────────────────────────────────────────
 
-prepare-dataset:
-	@echo "$(YELLOW)🖼️ Подготовка датасета изображений...$(NC)"
-	python scripts/prepare_image_dataset.py --create-mapping
-
-# Обучение
 train:
-	@echo "$(YELLOW)🤖 Обучение модели (50 эпох)...$(NC)"
-	python scripts/train_model.py --epochs 50 --batch-size 32 --plot
+	@echo "$(GREEN)🚀 Запуск обучения модели...$(NC)"
+	$(PYTHON) scripts/train_model.py --plot
 
 train-quick:
-	@echo "$(YELLOW)🤖 Быстрое обучение модели (5 эпох)...$(NC)"
-	python scripts/train_model.py --epochs 5 --batch-size 4 --plot
+	@echo "$(GREEN)⚡ Быстрое тестовое обучение...$(NC)"
+	$(PYTHON) scripts/train_model.py --quick-test --plot
 
-evaluate:
-	@echo "$(YELLOW)📊 Оценка модели...$(NC)"
-	python scripts/train_model.py --test-only
+train-gpu:
+	@echo "$(GREEN)🚀 Запуск обучения на GPU...$(NC)"
+	$(PYTHON) scripts/train_model.py --device cuda --plot
 
-# Полный пайплайн
-pipeline:
-	@echo "$(YELLOW)🚀 Запуск полного пайплайна...$(NC)"
-	python scripts/run_pipeline.py
+test-basic:
+	@echo "$(GREEN)🔍 Запуск базовых тестов модели...$(NC)"
+	$(PYTHON) test_model_basic.py
 
-pipeline-quick:
-	@echo "$(YELLOW)🚀 Запуск быстрого пайплайна...$(NC)"
-	python scripts/run_pipeline.py --quick
+test-full:
+	@echo "$(GREEN)🔍 Запуск полного тестирования пайплайна...$(NC)"
+	$(PYTHON) test_full_pipeline.py
 
-# Сервисы
-run-api:
-	@echo "$(YELLOW)🌐 Запуск API сервера...$(NC)"
+test: test-basic test-full
+	@echo "$(GREEN)✅ Все тесты пройдены успешно!$(NC)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ЗАПУСК СИСТЕМЫ
+# ─────────────────────────────────────────────────────────────────────────────
+
+api:
+	@echo "$(GREEN)🌐 Запуск API сервера...$(NC)"
 	uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
-run-ui:
-	@echo "$(YELLOW)🎨 Запуск веб-интерфейса...$(NC)"
+streamlit:
+	@echo "$(GREEN)🎨 Запуск Streamlit интерфейса...$(NC)"
 	streamlit run streamlit_app.py
 
-run-all:
-	@echo "$(YELLOW)🚀 Запуск всех сервисов...$(NC)"
-	@echo "  API: http://localhost:8000"
-	@echo "  UI: http://localhost:8501"
-	@make -j 2 run-api run-ui
+run:
+	@echo "$(GREEN)🚀 Запуск полной системы...$(NC)"
+	@echo "$(YELLOW)API сервер будет доступен на http://localhost:8000$(NC)"
+	@echo "$(YELLOW)Streamlit интерфейс будет доступен на http://localhost:8501$(NC)"
+	@make -j2 api streamlit
 
-# Очистка
+# ─────────────────────────────────────────────────────────────────────────────
+# ОЧИСТКА И ОБСЛУЖИВАНИЕ
+# ─────────────────────────────────────────────────────────────────────────────
+
 clean:
 	@echo "$(YELLOW)🧹 Очистка временных файлов...$(NC)"
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	find . -type f -name "*.pyo" -delete 2>/dev/null || true
-	find . -type f -name "*.pyd" -delete 2>/dev/null || true
-	find . -type f -name ".coverage" -delete 2>/dev/null || true
-	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".ruff_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name "build" -exec rm -rf {} + 2>/dev/null || true
+	rm -rf $(REPORTS_DIR)/*
+	rm -rf $(LOGS_DIR)/*
+	rm -rf .pytest_cache
+	rm -rf .coverage
+	rm -rf htmlcov
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.pyo" -delete
+	find . -type f -name "*.pyd" -delete
+	find . -type f -name ".coverage" -delete
+	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	@echo "$(GREEN)✅ Очистка завершена$(NC)"
 
-clean-all: clean
-	@echo "$(YELLOW)🧹 Очистка всех данных...$(NC)"
-	rm -rf data/processed/* 2>/dev/null || true
-	rm -rf checkpoints/* 2>/dev/null || true
-	rm -rf logs/* 2>/dev/null || true
-	rm -rf reports/* 2>/dev/null || true
-	rm -rf coverage_html/* 2>/dev/null || true
-	rm -rf uploads/* 2>/dev/null || true
-	rm -rf exports/* 2>/dev/null || true
+clean-data:
+	@echo "$(YELLOW)🧹 Очистка обработанных данных...$(NC)"
+	rm -rf $(DATA_DIR)/processed/*
+	rm -rf $(DATA_DIR)/raw/test_images
+	@echo "$(GREEN)✅ Данные очищены$(NC)"
 
-# По умолчанию
-.DEFAULT_GOAL := help
+clean-all: clean clean-data
+	@echo "$(YELLOW)🧹 Полная очистка...$(NC)"
+	rm -rf $(CHECKPOINTS_DIR)/*
+	rm -rf $(VENV_DIR)
+	@echo "$(GREEN)✅ Полная очистка завершена$(NC)"
+
+docs:
+	@echo "$(GREEN)📚 Генерация документации...$(NC)"
+	# pdoc --html --output-dir docs src --force
+	@echo "$(YELLOW)⚠️  Документация будет доступна в docs/$(NC)"
+
+lint:
+	@echo "$(GREEN)🔍 Проверка кода линтером...$(NC)"
+	ruff check src/ scripts/
+	@echo "$(GREEN)✅ Линтер завершил проверку$(NC)"
+
+format:
+	@echo "$(GREEN)✨ Форматирование кода...$(NC)"
+	black src/ scripts/
+	@echo "$(GREEN)✅ Форматирование завершено$(NC)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# КОМБИНИРОВАННЫЕ КОМАНДЫ
+# ─────────────────────────────────────────────────────────────────────────────
+
+quick: data train-quick test-basic
+	@echo "$(GREEN)🎉 Быстрый прогон завершен успешно!$(NC)"
+
+all: data train test
+	@echo "$(GREEN)🎉 Полный цикл выполнен успешно!$(NC)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ
+# ─────────────────────────────────────────────────────────────────────────────
+
+check-data:
+	@echo "$(GREEN)🔍 Проверка наличия данных...$(NC)"
+	@if [ -f "data/raw/recipes.xlsx" ]; then \
+		echo "$(GREEN)  ✅ Excel файл найден$(NC)"; \
+	else \
+		echo "$(RED)  ❌ Excel файл не найден: data/raw/recipes.xlsx$(NC)"; \
+	fi
+	@if [ -d "data/raw/images" ]; then \
+		IMG_COUNT=$$(find data/raw/images -name "*.jpg" -o -name "*.png" | wc -l); \
+		echo "$(GREEN)  ✅ Изображения найдены: $$IMG_COUNT$(NC)"; \
+	else \
+		echo "$(RED)  ❌ Директория с изображениями не найдена: data/raw/images$(NC)"; \
+	fi
+
+status:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(GREEN)  Terrazite AI - Статус проекта$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@make check-data
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
