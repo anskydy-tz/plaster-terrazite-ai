@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 from pathlib import Path
 import json
+import pandas as pd
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -45,41 +46,41 @@ def create_texture_image(base_color, texture_strength=0.3, size=(224, 224)):
     
     return Image.fromarray(image)
 
-def create_test_images_for_recipe(recipe_id, recipe_name, output_dir, num_images=3):
+def create_test_images_for_recipe(recipe_id, recipe_name, recipe_type, output_dir, num_images=3):
     """Создание тестовых изображений для рецепта"""
     recipe_dir = output_dir / f"recipe_{recipe_id}"
     recipe_dir.mkdir(parents=True, exist_ok=True)
     
     # Цвета в зависимости от типа рецепта
-    if 'Терразит' in recipe_name:
+    if 'Терразит' in recipe_type:
         # Серые и бежевые оттенки
         colors = [
             (200, 200, 200),  # Светло-серый
             (180, 160, 140),  # Бежевый
             (150, 150, 150)   # Серый
         ]
-    elif 'Шовный' in recipe_name:
+    elif 'Шовный' in recipe_type:
         # Серые оттенки
         colors = [
             (160, 160, 160),
             (140, 140, 140),
             (120, 120, 120)
         ]
-    elif 'Мастика' in recipe_name:
+    elif 'Мастика' in recipe_type:
         # Светлые оттенки
         colors = [
             (240, 240, 240),  # Почти белый
             (230, 220, 210),  # Кремовый
             (220, 210, 200)   # Светло-бежевый
         ]
-    elif 'Терраццо' in recipe_name:
+    elif 'Терраццо' in recipe_type:
         # Разноцветные (мраморные)
         colors = [
             (250, 240, 230),  # Светло-мраморный
             (230, 220, 210),  # Мраморный
             (210, 200, 190)   # Темно-мраморный
         ]
-    elif 'Ретушь' in recipe_name:
+    elif 'Ретушь' in recipe_type:
         # Коричневые оттенки
         colors = [
             (180, 150, 120),  # Светло-коричневый
@@ -124,8 +125,8 @@ def main():
     logger.info("Создание тестовых изображений для Terrazite AI")
     logger.info("=" * 60)
     
-    # Директория для сохранения
-    output_dir = Path("data/raw/images")
+    # Директория для сохранения тестовых изображений
+    output_dir = Path("data/raw/test_images")
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Загружаем рецепты из Excel или создаем тестовые
@@ -140,8 +141,8 @@ def main():
             
             recipes = []
             for idx, row in df.iterrows():
-                recipe_name = row['recipe_name'] if 'recipe_name' in row.columns else f"Recipe_{idx}"
-                recipe_type = row['category'] if 'category' in row.columns else 'Терразит'
+                recipe_name = row['recipe_name'] if 'recipe_name' in row.index else f"Recipe_{idx}"
+                recipe_type = row['category'] if 'category' in row.index else 'Терразит'
                 recipes.append({
                     'id': idx + 1,
                     'name': recipe_name,
@@ -158,10 +159,11 @@ def main():
             recipe_types = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
             
             for i in range(50):  # 50 тестовых рецептов
+                recipe_type = recipe_types[i % len(recipe_types)]
                 recipes.append({
                     'id': i + 1,
-                    'name': f"{recipe_types[i % len(recipe_types)]}_Тестовый_{i+1}",
-                    'type': recipe_types[i % len(recipe_types)]
+                    'name': f"{recipe_type}_Тестовый_{i+1}",
+                    'type': recipe_type
                 })
             
             logger.info(f"Создано {len(recipes)} тестовых рецептов")
@@ -174,15 +176,16 @@ def main():
         recipes = []
         recipe_types = ['Терразит', 'Шовный', 'Мастика', 'Терраццо', 'Ретушь']
         
-        for i in range(5):
+        for i, recipe_type in enumerate(recipe_types):
             recipes.append({
                 'id': i + 1,
-                'name': f"{recipe_types[i]}_Тестовый",
-                'type': recipe_types[i]
+                'name': f"{recipe_type}_Тестовый",
+                'type': recipe_type
             })
     
     # Создаем изображения для каждого рецепта
     all_images = []
+    manifest_data = []
     
     logger.info(f"Создание изображений в: {output_dir}")
     
@@ -191,23 +194,35 @@ def main():
             images = create_test_images_for_recipe(
                 recipe['id'], 
                 recipe['name'],
+                recipe['type'],
                 output_dir,
                 num_images=3
             )
             
-            all_images.append({
+            recipe_data = {
                 'recipe_id': recipe['id'],
                 'recipe_name': recipe['name'],
                 'recipe_type': recipe['type'],
                 'images': images
-            })
+            }
+            all_images.append(recipe_data)
+            
+            # Заполняем данные для манифеста
+            for img_path in images:
+                manifest_data.append({
+                    'image_path': img_path,
+                    'recipe_id': recipe['id'],
+                    'recipe_name': recipe['name'],
+                    'recipe_type': recipe['type'],
+                    'split': 'train'  # По умолчанию все в train для тестов
+                })
             
             logger.info(f"  Рецепт {recipe['id']}: {recipe['name']} - {len(images)} изображений")
             
         except Exception as e:
             logger.error(f"Ошибка создания изображений для рецепта {recipe['id']}: {e}")
     
-    # Сохраняем манифест изображений
+    # Сохраняем детальный манифест изображений
     manifest_path = output_dir / "images_manifest.json"
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump({
@@ -216,47 +231,31 @@ def main():
             'recipes': all_images
         }, f, ensure_ascii=False, indent=2)
     
+    # СОЗДАЕМ CSV МАНИФЕСТ, СОВМЕСТИМЫЙ С create_data_manifest.py
+    csv_manifest_path = Path("data/raw/test_images_manifest.csv")
+    if manifest_data:
+        df = pd.DataFrame(manifest_data)
+        df.to_csv(csv_manifest_path, index=False, encoding='utf-8')
+        logger.info(f"CSV манифест сохранен: {csv_manifest_path}")
+    else:
+        logger.warning("Нет данных для создания CSV манифеста")
+    
     logger.info("=" * 60)
     logger.info(f"Создано изображений: {sum(len(item['images']) for item in all_images)}")
     logger.info(f"Создано рецептов: {len(all_images)}")
-    logger.info(f"Манифест сохранен: {manifest_path}")
+    logger.info(f"Детальный манифест: {manifest_path}")
+    logger.info(f"CSV манифест: {csv_manifest_path}")
     logger.info("=" * 60)
     
     print(f"\n✅ ТЕСТОВЫЕ ИЗОБРАЖЕНИЯ УСПЕШНО СОЗДАНЫ!")
     print(f"   Директория: {output_dir}")
     print(f"   Рецептов: {len(all_images)}")
     print(f"   Изображений: {sum(len(item['images']) for item in all_images)}")
-    print(f"   Манифест: {manifest_path}")
-    
-    # Создаем простой манифест для подготовки датасета
-    create_simple_manifest(all_images, output_dir)
+    print(f"   CSV манифест: {csv_manifest_path}")
+    print(f"\n📋 Чтобы использовать в пайплайне:")
+    print(f"   python scripts/prepare_image_dataset.py --manifest data/raw/test_images_manifest.csv")
     
     return all_images
-
-def create_simple_manifest(recipes_data, output_dir):
-    """Создание простого CSV манифеста для подготовки датасета"""
-    import pandas as pd
-    
-    manifest_data = []
-    
-    for recipe in recipes_data:
-        for i, img_path in enumerate(recipe['images']):
-            manifest_data.append({
-                'image_path': img_path,
-                'recipe_id': recipe['recipe_id'],
-                'recipe_name': recipe['recipe_name'],
-                'recipe_type': recipe['recipe_type'],
-                'split': 'train'  # Все в тренировочный набор для теста
-            })
-    
-    df = pd.DataFrame(manifest_data)
-    manifest_path = output_dir.parent / "processed" / "test_data_manifest.csv"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    df.to_csv(manifest_path, index=False, encoding='utf-8')
-    
-    logger.info(f"Простой манифест сохранен: {manifest_path}")
-    print(f"   CSV манифест: {manifest_path}")
 
 if __name__ == "__main__":
     main()
